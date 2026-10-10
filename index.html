@@ -85,7 +85,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.3.0</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.3.1</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -171,6 +171,7 @@ const pinIcon=c=>L.divIcon({className:'',html:`<div class="pin ${c}">${c==='s'?'
 let mS=null,mG=null,routeLine=null,komaLayer=L.layerGroup().addTo(map);
 function setLoc(which,ll,label){
   st.fixedWps=null;
+  if(st.res&&!st.stale){st.stale=true;setTimeout(()=>status('スタート・ゴールが変わりました。「コマ図を作る」を押すと新しい経路になります（下のコマ図は前の経路です）',1),0)}
   st[which]=ll?{lat:+ll[0].toFixed(6),lon:+ll[1].toFixed(6),label:label||''}:null;
   const info=$(which==='start'?'startInfo':'goalInfo');
   let m=which==='start'?mS:mG;
@@ -283,9 +284,11 @@ function culprits(r,nw){
   for(const [a,b] of sp)for(let i=0;i<nw;i++){const w=bound[i+1];if((w>a-80&&w<b+80)||(bound[i]<b&&bound[i+2]>a&&b-a<200))out.add(i)}
   return [...out];
 }
-async function findRoute(S,G,Lm,k,seed){
+const CANCEL=new Error('cancel');
+async function findRoute(S,G,Lm,k,seed,alive){
   let factor=1.3,best=null;const tries=8;
   for(let i=0;i<tries;i++){
+    if(!alive())throw CANCEL;
     const rng=mulberry(seed*7919+i*104729);
     status(`経路を探しています… (${i+1}/${tries})`);
     const wps=makeWaypoints(S,G,Lm/factor,k,rng);
@@ -300,6 +303,7 @@ async function findRoute(S,G,Lm,k,seed){
   // 往復・Uターンの原因の経由点を、近くへずらす（だめなら外す）。良くなった時だけ採用
   const rng=mulberry(seed*31+7),pj=proj(S);
   for(let n=0;n<5&&best&&best.bt;n++){
+    if(!alive())throw CANCEL;
     const bad=culprits(best.r,best.wps.length);if(!bad.length)break;
     const tryWps=[best.wps.map((w,i)=>{if(!bad.includes(i))return w;const x=pj.f(w),a=rng()*Math.PI*2,m=250+rng()*600;return pj.b([x[0]+Math.cos(a)*m,x[1]+Math.sin(a)*m])})];
     if(best.wps.length-bad.length>=(hav(S,G)<600?2:0))tryWps.push(best.wps.filter((w,i)=>!bad.includes(i)));
@@ -316,16 +320,21 @@ async function findRoute(S,G,Lm,k,seed){
 }
 
 /* ---------- 信号・一時停止・目印（OSM） ---------- */
-async function fetchPOI(coords){
-  const pts=[];let acc=1e9,prev=null;
-  for(const c of coords){const p=[c[1],c[0]];if(prev)acc+=hav(prev,p);if(acc>=120){pts.push(p);acc=0}prev=p}
-  const last=coords[coords.length-1];pts.push([last[1],last[0]]);
-  const step=Math.ceil(pts.length/400),use=pts.filter((p,i)=>i%step===0||i===pts.length-1);
-  const line=use.map(p=>p[0].toFixed(5)+','+p[1].toFixed(5)).join(',');
-  const q=`[out:json][timeout:50];(node[highway~"^(traffic_signals|stop)$"](around:40,${line});nwr[shop~"^(convenience|supermarket)$"](around:50,${line});nwr[amenity~"^(fuel|post_office|police|school|fast_food|bank)$"](around:50,${line}););out center tags;way[highway][lanes~"^([4-9]|1[0-9])$"](around:30,${line});out geom tags;`;
+async function fetchPOI(coords,alive){
+  // 経路を約2.5kmずつに分け、それぞれの範囲（少し広げた矩形）で問い合わせる
+  const boxes=[];let box=null,acc=0,prev=null;
+  for(const c of coords){const p=[c[1],c[0]];if(prev)acc+=hav(prev,p);prev=p;
+    if(!box)box=[p[0],p[1],p[0],p[1]];box=[Math.min(box[0],p[0]),Math.min(box[1],p[1]),Math.max(box[2],p[0]),Math.max(box[3],p[1])];
+    if(acc>=2500){boxes.push(box);box=[p[0],p[1],p[0],p[1]];acc=0}}
+  if(box)boxes.push(box);
+  const bb=boxes.map(b=>[b[0]-.0006,b[1]-.0008,b[2]+.0006,b[3]+.0008].map(v=>v.toFixed(5)).join(','));
+  const st1=bb.map(b=>`node[highway~"^(traffic_signals|stop)$"](${b});nwr[shop~"^(convenience|supermarket)$"](${b});nwr[amenity~"^(fuel|post_office|police|school|fast_food|bank)$"](${b});`).join('');
+  const st2=bb.map(b=>`way[highway][lanes~"^([4-9]|1[0-9])$"](${b});`).join('');
+  const q=`[out:json][timeout:60];(${st1});out center tags;(${st2});out geom tags;`;
   const errs=[];
   for(const [u,wait] of OVERPASS){
-    if(wait){status(`信号・目印のサーバーが混んでいます。${wait/1000}秒待って再試行…`);await sleep(wait)}
+    if(alive&&!alive())return null;
+    if(wait){status(`信号・目印のサーバーが混んでいます。${wait/1000}秒待って再試行…（経路とコマ図はもう使えます）`);await sleep(wait);if(alive&&!alive())return null}
     try{const j=await fetchJSON(u,{method:'POST',body:'data='+encodeURIComponent(q),headers:{'Content-Type':'application/x-www-form-urlencoded'}},45000);
       // 時間切れでも200で返り、remark に理由が入って要素が空になる
       if(j.remark&&/error|timed out|runtime/i.test(j.remark))throw new Error(j.remark.slice(0,80));
@@ -643,20 +652,23 @@ function drawMap(){
 function summary(){
   const r=st.res,opt=readOpt(),t=r.route.distance,req=Math.ceil(t/1000/opt.cast*60);
   const sig=r.komas.filter(k=>k.sig).length;
-  $('summary').innerHTML=`<span>全長 <b>${km(t)}</b> km</span><span>コマ <b>${r.komas.length}</b></span><span>所要 <b>${req}</b> 分（${opt.cast}km/h）</span><span>信号 ${sig}</span>${r.poiOk?'':'<span style="color:#c8102e">信号・目印のデータが取れませんでした（'+esc(r.poiErr||'')+'）</span><button id="poiRetry">信号・目印だけ取り直す</button>'}${r.bt?'<span style="color:#c8102e">往復・Uターンする所が残っています（別の経路にしてください）</span>':''}${r.ev.mw?'<span style="color:#c8102e">高速道路・フェリーを通ります（別の経路にしてください）</span>':''}`;
+  $('summary').innerHTML=`<span>全長 <b>${km(t)}</b> km</span><span>コマ <b>${r.komas.length}</b></span><span>所要 <b>${req}</b> 分（${opt.cast}km/h）</span><span>信号 ${sig}</span>${r.poiOk?'':r.poiLoading?'<span>信号・目印を取得中…</span>':'<span style="color:#c8102e">信号・目印のデータが取れませんでした（'+esc(r.poiErr||'')+'）</span><button id="poiRetry">信号・目印だけ取り直す</button>'}${r.bt?'<span style="color:#c8102e">往復・Uターンする所が残っています（別の経路にしてください）</span>':''}${r.ev.mw?'<span style="color:#c8102e">高速道路・フェリーを通ります（別の経路にしてください）</span>':''}`;
   $('resPanel').style.display='';
-  const pr=$('poiRetry');if(pr)pr.onclick=async()=>{pr.disabled=true;status('信号・一時停止・目印を調べています…');const poi=await fetchPOI(r.route.geometry.coordinates);
-    if(poi){r.poi=poi;r.poiOk=true;r.poiErr='';r.komas=extract(r.route,poi,readOpt());st.hl=-1;drawMap();renderBook();status('信号・目印を取り直しました')}else{r.poiErr=poiErr;status('まだ取れません（'+poiErr+'）。1分ほど待ってからもう一度',1)}summary()};
+  const pr=$('poiRetry');if(pr)pr.onclick=()=>{pr.disabled=true;status('信号・一時停止・目印を調べています…');const g=genId;loadPOI(r,()=>g===genId)};
 }
 
 /* ---------- 実行 ---------- */
-let busy=false;
+let busy=false,genId=0;
+// 作成中にもう一度押されたら、前の作成は捨てて新しい条件で作り直す（前は黙って無視していた）
 async function generate(newSeed){
-  if(busy)return;busy=true;$('genBtn').disabled=true;$('rerollBtn').disabled=true;
+  const my=++genId,alive=()=>my===genId;
+  busy=true;$('rerollBtn').disabled=true;
   try{
     if($('startIn').value.trim()&&!(await resolve('start')))return;
+    if(!alive())return;
     if(!st.start)return status('スタートを指定してください（住所・座標・現在地・地図クリック）',1);
     if($('goalIn').value.trim()&&!(await resolve('goal')))return;
+    if(!alive())return;
     if(newSeed||!$('seedIn').value)$('seedIn').value=1+Math.floor(Math.random()*99999);
     const seed=+$('seedIn').value;
     const S=[st.start.lat,st.start.lon],G=st.goal?[st.goal.lat,st.goal.lon]:S;
@@ -667,23 +679,34 @@ async function generate(newSeed){
     let best;
     // 共有リンクの経由点があればそのまま使う（シードだけだと経路サーバーの都合で変わることがある）
     if(st.fixedWps&&!newSeed){status('リンクの経路を読み込み中…');const r=await routeOnce([S,...st.fixedWps,G]);best={r,wps:st.fixedWps,...scoreRoute(r,Lkm*1000)}}
-    else best=await findRoute(S,G,Lkm*1000,k,seed);
+    else best=await findRoute(S,G,Lkm*1000,k,seed,alive);
+    if(!alive())return;
     if(!best)throw new Error('経路が見つかりませんでした');
-    status('信号・一時停止・目印を調べています…');
-    const poi=await fetchPOI(best.r.geometry.coordinates);
-    const komas=extract(best.r,poi,readOpt());
-    st.res={S,G:st.goal?G:null,route:best.r,komas,seed,wps:best.wps,ev:best.ev,bt:best.bt,poi,poiOk:!!poi,poiErr};st.hl=-1;
-    drawMap();renderBook();summary();save();
-    status(`できました：${km(best.r.distance)} km・コマ ${komas.length}。下のロードブックを確認して印刷してください。`);
-    $('rerollBtn').disabled=false;
-  }catch(e){console.error(e);status('作れませんでした：'+e.message+'（経路サーバーが混んでいる時は少し待って再実行）',1)}
-  finally{busy=false;$('genBtn').disabled=false;if(st.res)$('rerollBtn').disabled=false}
+    // 経路とコマ図を先に出し、信号・目印はあとから足す（サーバー待ちで何分も止まらないように）
+    const res={S,G:st.goal?G:null,route:best.r,komas:extract(best.r,null,readOpt()),seed,wps:best.wps,ev:best.ev,bt:best.bt,poi:null,poiOk:false,poiLoading:true,poiErr:''};
+    st.res=res;st.hl=-1;st.stale=false;drawMap();renderBook();summary();save();
+    $('rerollBtn').disabled=false;busy=false;
+    status(`経路ができました（${km(best.r.distance)} km）。信号・目印を調べています…（終わるとコマが増えることがあります）`);
+    await loadPOI(res,alive);
+  }catch(e){if(e===CANCEL)return;console.error(e);if(alive())status('作れませんでした：'+e.message+'（経路サーバーが混んでいる時は少し待って再実行）',1)}
+  finally{if(alive()){busy=false;if(st.res)$('rerollBtn').disabled=false}}
+}
+async function loadPOI(res,alive){
+  res.poiLoading=true;summary();
+  const poi=await fetchPOI(res.route.geometry.coordinates,alive);
+  if(!alive()||st.res!==res)return;
+  res.poiLoading=false;
+  if(poi){res.poi=poi;res.poiOk=true;res.poiErr='';res.komas=extract(res.route,poi,readOpt());st.hl=-1;drawMap();renderBook();summary();
+    status(`できました：${km(res.route.distance)} km・コマ ${res.komas.length}。下のロードブックを確認して印刷してください。`)}
+  else{res.poiErr=poiErr;summary();
+    status(`コマ図はできました（${km(res.route.distance)} km・コマ ${res.komas.length}）が、信号・目印のサーバーが混んでいて取れませんでした。30秒後にもう一度試します`,1);
+    // 1回だけ自動で取り直す
+    if(!res.autoRetried){res.autoRetried=true;await sleep(30000);if(alive()&&st.res===res&&!res.poiOk){status('信号・目印をもう一度調べています…');await loadPOI(res,alive)}}}
 }
 $('genBtn').onclick=()=>generate(false);
 $('rerollBtn').onclick=()=>generate(true);
 // 入力・経路・保存内容をすべて初期状態に戻す
 $('resetBtn').onclick=()=>{
-  if(busy)return;
   if(!confirm('スタート・ゴール・設定・作ったコマ図をすべて消して最初の状態に戻します。よろしいですか？'))return;
   try{localStorage.removeItem('komazu')}catch(e){}
   location.href=location.pathname;
