@@ -82,7 +82,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.1.0</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.1.1</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -141,7 +141,9 @@ table.rb tr.blank td{border-color:#000}
 <script>
 'use strict';
 const OSRM='https://router.project-osrm.org/route/v1/driving/';
-const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass-api.de/api/interpreter'];
+// overpass.kumi.systems はブラウザからだとCORSで失敗するので使わない
+const OVERPASS=[['https://overpass-api.de/api/interpreter',0],['https://maps.mail.ru/osm/tools/overpass/api/interpreter',0],['https://overpass-api.de/api/interpreter',4000],['https://overpass-api.de/api/interpreter',10000]];
+let poiErr='';
 const $=id=>document.getElementById(id);
 const st={start:null,goal:null,pick:null,res:null,hl:-1};
 
@@ -271,14 +273,21 @@ async function fetchPOI(coords){
   const last=coords[coords.length-1];pts.push([last[1],last[0]]);
   const step=Math.ceil(pts.length/400),use=pts.filter((p,i)=>i%step===0||i===pts.length-1);
   const line=use.map(p=>p[0].toFixed(5)+','+p[1].toFixed(5)).join(',');
-  const q=`[out:json][timeout:40];(node[highway=traffic_signals](around:35,${line});node[highway=stop](around:35,${line});nwr[shop=convenience](around:50,${line});nwr[amenity=fuel](around:50,${line}););out center tags;`;
-  for(const u of OVERPASS){
+  const q=`[out:json][timeout:40];(node[highway=traffic_signals](around:35,${line});node[highway=stop](around:35,${line});nwr[shop=convenience](around:50,${line});nwr[amenity=fuel](around:50,${line});nwr[shop=supermarket](around:50,${line});nwr[amenity~"^(post_office|police|school|fast_food|bank)$"](around:50,${line});node[highway=traffic_signals][name](around:60,${line}););out center tags;`;
+  const errs=[];
+  for(const [u,wait] of OVERPASS){
+    if(wait){status(`信号・目印のサーバーが混んでいます。${wait/1000}秒待って再試行…`);await sleep(wait)}
     try{const j=await fetchJSON(u,{method:'POST',body:'data='+encodeURIComponent(q),headers:{'Content-Type':'application/x-www-form-urlencoded'}},45000);
+      // 時間切れでも200で返り、remark に理由が入って要素が空になる
+      if(j.remark&&/error|timed out|runtime/i.test(j.remark))throw new Error(j.remark.slice(0,80));
+      poiErr='';
       return j.elements.map(e=>{const lat=e.lat??e.center?.lat,lon=e.lon??e.center?.lon,t=e.tags||{};
-        const kind=t.highway==='traffic_signals'?'sig':t.highway==='stop'?'stop':t.shop==='convenience'?'cvs':'gs';
-        return{kind,p:[lat,lon],name:shortName(kind,t)}}).filter(e=>e.p[0]!=null);
-    }catch(e){console.warn('overpass',u,e)}
+        const kind=t.highway==='traffic_signals'?'sig':t.highway==='stop'?'stop':t.shop==='convenience'?'cvs':t.amenity==='fuel'?'gs':'etc';
+        const nm=kind==='sig'?(t.name||''):shortName(kind,t);
+        return{kind,p:[lat,lon],name:nm}}).filter(e=>e.p[0]!=null&&(e.kind!=='etc'||e.name));
+    }catch(e){console.warn('overpass',u,e);errs.push(new URL(u).host+': '+(e.name==='AbortError'?'時間切れ':e.message))}
   }
+  poiErr=errs.join(' / ');
   return null;
 }
 function shortName(kind,t){
@@ -287,6 +296,10 @@ function shortName(kind,t){
   for(const [re,s] of table)if(re.test(n))return s;
   if(kind==='cvs')return n?n.slice(0,6):'コンビニ';
   if(kind==='gs')return n?n.replace(/株式会社|有限会社/g,'').slice(0,6):'GS';
+  if(t.amenity==='post_office')return '郵便局';
+  if(t.amenity==='police')return '交番';
+  if(t.amenity==='school')return n?n.replace(/立/,'').slice(-6):'学校';
+  return n.replace(/株式会社|有限会社/g,'').slice(0,7);
   return '';
 }
 
@@ -344,7 +357,10 @@ function extract(route,poi,opt){
     // 一時停止：進入側の手前にある止まれ
     k.stop=near(f.p,'stop',30).some(e=>{const b=brg(f.p,e.p);return Math.abs(n180(b-f.bearings[f.inI]))<40||hav(f.p,e.p)<6});
     // 目印（一番近いコンビニ・GS）
-    const lm=poi?poi.filter(e=>(e.kind==='cvs'||e.kind==='gs')&&hav(e.p,f.p)<45).sort((a,b)=>hav(a.p,f.p)-hav(b.p,f.p))[0]:null;
+    const rank=e=>(e.kind==='etc'?30:0)+hav(e.p,f.p);
+    const lm=poi?poi.filter(e=>(e.kind==='cvs'||e.kind==='gs'||e.kind==='etc')&&hav(e.p,f.p)<50).sort((a,b)=>rank(a)-rank(b))[0]:null;
+    // 交差点名（信号の name）
+    const sn=poi?poi.filter(e=>e.kind==='sig'&&e.name&&hav(e.p,f.p)<40)[0]:null;if(sn)k.jname=sn.name;
     if(lm){const rel=n180(brg(f.p,lm.p)-f.travel);k.lm={name:lm.name,rel}}
     komas.push(k);
   }
@@ -459,6 +475,7 @@ function remarks(k,opt,total){
   if(k.type==='goal'){const req=Math.ceil(total/1000/opt.cast*60);return `<div class="act">GOAL</div><div>${esc((opt.sec.split(/→|->/)[1]||'TC1').trim())} 到着</div><div class="sm">所要時間 ${req}分（${opt.cast}km/h）</div>`}
   const parts=[];if(k.sig)parts.push('信号');parts.push(shapeName(k));
   let s=`<div class="act">${actionName(k)}</div><div>${esc(parts.join(' '))}${k.stop?'　一時停止':''}</div>`;
+  if(k.jname)s+=`<div class="sm">交差点名「${esc(k.jname)}」</div>`;
   if(k.lm)s+=`<div class="sm">${quad(k.lm.rel)}に ${esc(k.lm.name)}</div>`;
   if(!sameRoad(k.inRoad,k.outRoad)){const rl=roadLabel(k.outRoad);if(rl)s+=`<div class="sm">→ ${esc(rl)}</div>`}
   return s;
@@ -502,7 +519,7 @@ function drawMap(){
 function summary(){
   const r=st.res,opt=readOpt(),t=r.route.distance,req=Math.ceil(t/1000/opt.cast*60);
   const sig=r.komas.filter(k=>k.sig).length;
-  $('summary').innerHTML=`<span>全長 <b>${km(t)}</b> km</span><span>コマ <b>${r.komas.length}</b></span><span>所要 <b>${req}</b> 分（${opt.cast}km/h）</span><span>信号 ${sig}</span>${r.poiOk?'':'<span style="color:#c8102e">信号・目印のデータが取れませんでした</span>'}${r.ev.overlap>.03?'<span style="color:#c8102e">同じ道を2回通る所があります</span>':''}`;
+  $('summary').innerHTML=`<span>全長 <b>${km(t)}</b> km</span><span>コマ <b>${r.komas.length}</b></span><span>所要 <b>${req}</b> 分（${opt.cast}km/h）</span><span>信号 ${sig}</span>${r.poiOk?'':'<span style="color:#c8102e">信号・目印のデータが取れませんでした（'+esc(r.poiErr||'')+'）。少し待って「コマ図を作る」をもう一度</span>'}${r.ev.overlap>.03?'<span style="color:#c8102e">同じ道を2回通る所があります</span>':''}`;
   $('resPanel').style.display='';
 }
 
@@ -526,7 +543,7 @@ async function generate(newSeed){
     status('信号・一時停止・目印を調べています…');
     const poi=await fetchPOI(best.r.geometry.coordinates);
     const komas=extract(best.r,poi,readOpt());
-    st.res={route:best.r,komas,seed,ev:best.ev,poi,poiOk:!!poi};st.hl=-1;
+    st.res={route:best.r,komas,seed,ev:best.ev,poi,poiOk:!!poi,poiErr};st.hl=-1;
     drawMap();renderBook();summary();save();
     status(`できました：${km(best.r.distance)} km・コマ ${komas.length}。下のロードブックを確認して印刷してください。`);
     $('rerollBtn').disabled=false;
