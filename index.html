@@ -85,7 +85,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.3.2</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.4.0</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -296,7 +296,7 @@ async function findRoute(S,G,Lm,k,seed,alive){
     const sc=scoreRoute(r,Lm);
     if(!best||sc.score<best.score)best={r,wps,...sc};
     // 道の曲がり具合を学習して次の候補の大きさを合わせる
-    const pl=plen([S,...wps,G].map(proj(S).f));if(pl>0)factor=Math.min(2.4,Math.max(1.05,(factor+r.distance/pl)/2));
+    const pl=plen([S,...wps,G].map(proj(S).f));if(pl>0)factor=Math.min(4,Math.max(1.05,(factor+r.distance/pl)/2));
     if(sc.dErr<.2&&!sc.bt&&sc.ev.overlap<.005&&!sc.ev.mw)break;
     await sleep(1100);
   }
@@ -308,10 +308,13 @@ async function findRoute(S,G,Lm,k,seed,alive){
     const tryWps=[best.wps.map((w,i)=>{if(!bad.includes(i))return w;const x=pj.f(w),a=rng()*Math.PI*2,m=250+rng()*600;return pj.b([x[0]+Math.cos(a)*m,x[1]+Math.sin(a)*m])})];
     if(best.wps.length-bad.length>=(hav(S,G)<600?2:0))tryWps.push(best.wps.filter((w,i)=>!bad.includes(i)));
     let improved=false;
-    for(const wps of tryWps){
+    for(const [ti,wps] of tryWps.entries()){
       status('同じ道を往復・Uターンする所を直しています…');await sleep(1100);
       let r;try{r=await routeOnce([S,...wps,G])}catch(e){continue}
-      const sc=scoreRoute(r,Lm);if(sc.score<best.score){best={r,wps,...sc};improved=true;break}
+      const sc=scoreRoute(r,Lm);
+      // 経由点を外す案は、距離が目標から大きく外れる（ただの最短経路になる）なら採らない
+      if(ti===1&&sc.dErr>Math.max(.35,best.dErr))continue;
+      if(sc.score<best.score){best={r,wps,...sc};improved=true;break}
     }
     if(!improved&&n>=2)break;
   }
@@ -393,13 +396,16 @@ function extract(route,poi,opt){
     });
     cum+=s.distance;
   }
+  extract.lastJ=J; // テスト用
   const total=route.distance;
   const near=(p,kind,r)=>poi?poi.filter(e=>e.kind===kind&&hav(e.p,p)<r):[];
   // 判断が要る交差点か
   for(const j of J){
     const od=n180(j.out-j.travel);j.od=od;
     j.others=j.bearings.map((b,i)=>i).filter(i=>i!==j.inI&&i!==j.outI).map(i=>n180(j.bearings[i]-j.travel));
-    j.decision=Math.abs(od)>=35||j.others.some(o=>Math.abs(o)<60&&Math.abs(o-od)<75);
+    // 判断が要る＝はっきり曲がる／前向きの別の道が出口に近い（Y字・斜めの分かれ道）／真っすぐの道が無くて斜めの道が並ぶ
+    //（経路が20°以上斜めで、前向きの別の道もある＝どちらへ行くか迷う）
+    j.decision=Math.abs(od)>=35||j.others.some(o=>(Math.abs(o)<60&&Math.abs(o-od)<80)||(Math.abs(o)<=90&&Math.abs(o-od)<65)||(Math.abs(od)>=20&&Math.abs(o)<=90));
     if(Math.abs(od)>150)j.decision=true;
     j.sig=near(j.p,'sig',25).length>0;
   }
@@ -430,7 +436,12 @@ function extract(route,poi,opt){
     // 交差点名（信号の name）
     const sn=poi?poi.filter(e=>e.kind==='sig'&&e.name&&hav(e.p,f.p)<40)[0]:null;if(sn)k.jname=sn.name;
     if(lm){const rel=n180(brg(f.p,lm.p)-f.travel);k.lm={name:lm.name,rel}}
+    // 近い交差点で2回曲がる（クランク・連続した曲がり）は1つにまとめず、実際の位置関係で描く
+    const turns=c.nodes.filter(n=>Math.abs(n.od)>=45);
+    if(turns.length>=2){k.crank=turns.map(n=>n.od>0?'右':'左');k.arms=null;k.dev=n180(l.out-f.travel);komas.push(k);continue}
     k.arms=buildArms(k,poi&&poi.wide);
+    // 他に道が無く浅い曲がりだけのコマは要らない（道なり）
+    if(k.arms.length<=2&&Math.abs(k.dev)<45)continue;
     komas.push(k);
   }
   const lastStep=steps[steps.length-1];
@@ -457,34 +468,27 @@ function wideAt(p,b,wide){
 }
 function hasArm(n,b,skip){return n.bearings.some((x,i)=>i!==skip&&Math.abs(n180(x-b))<22)}
 function buildArms(k,wide){
-  let arms,p;
-  if(k.nodes.length===1){
-    const n=k.nodes[0];p=n.p;
-    arms=n.bearings.map((b,i)=>({b,role:i===n.inI?'in':i===n.outI?'out':''}));
-  }else if(k.nodes.length===2&&hasDivided(k.nodes[0],k.nodes[1])!=null){
-    // 中央分離帯のある道（上下線が別々の道）を横切る・曲がる → 1つの交差点にまとめて二重線で描く
-    const [n1,n2]=k.nodes,beta=hasDivided(n1,n2);p=[(n1.p[0]+n2.p[0])/2,(n1.p[1]+n2.p[1])/2];
-    arms=[];
-    const add=(b,role)=>{const o=arms.find(a=>Math.abs(n180(a.b-b))<25);if(o){if(role)o.role=role}else arms.push({b,role})};
-    n1.bearings.forEach((b,i)=>{if(i!==n1.outI)add(b,i===n1.inI?'in':'')});
-    n2.bearings.forEach((b,i)=>{if(i!==n2.inI)add(b,i===n2.outI?'out':'')});
-    arms.forEach(a=>{if(Math.abs(n180(a.b-beta))<22||Math.abs(n180(a.b-beta-180))<22)a.wide=true});
-    k.divided=true;
-  }else if(k.nodes.length===2){
-    // 食い違い・くの字の交差点：つなぎの道を除いて腕を合わせる
-    const [n1,n2]=k.nodes;p=n1.p;arms=[];
-    const add=(b,role)=>{const o=arms.find(a=>Math.abs(n180(a.b-b))<25);if(o){if(role)o.role=role}else arms.push({b,role})};
-    n1.bearings.forEach((b,i)=>{if(i!==n1.outI&&i!==n1.inI)add(b,'')});
-    n2.bearings.forEach((b,i)=>{if(i!==n2.inI&&i!==n2.outI)add(b,'')});
-    arms=arms.filter(a=>Math.abs(n180(a.b-k.travel-180))>25&&Math.abs(n180(a.b-k.out))>25);
-    arms.push({b:(k.travel+180)%360,role:'in'},{b:k.out,role:'out'});
-    k.offset=true;
-  }else return null;
-  arms.forEach(a=>{if(a.role==='in')a.b=(k.travel+180)%360;if(a.role==='out')a.b=k.out});
-  arms.forEach(a=>{a.rel=n180(a.b-k.travel);if(!a.wide)a.wide=wideAt(p,a.b,wide)});
-  if(!arms.some(a=>a.role==='in'))arms.push({b:(k.travel+180)%360,rel:180,role:'in'});
-  if(!arms.some(a=>a.role==='out'))arms.push({b:k.out,rel:n180(k.out-k.travel),role:'out'});
-  return arms;
+  // 角度の基準は交差点そのもの（最初の交差点に入る向き）。他の道の角度はこの基準で測る
+  const N=k.nodes,f=N[0],l=N[N.length-1],tL=f.travel;
+  let p=f.p;const arms=[];
+  const add=b=>{if(!arms.some(a=>Math.abs(n180(a.b-b))<25))arms.push({b,role:''})};
+  const beta=N.length===2?hasDivided(f,l):null;
+  if(beta!=null){p=[(f.p[0]+l.p[0])/2,(f.p[1]+l.p[1])/2];k.divided=true}
+  // 近い交差点がいくつあっても1つの交差点として描く（つなぎの道＝経路は除く）
+  N.forEach(n=>n.bearings.forEach((b,i)=>{if(i!==n.inI&&i!==n.outI)add(b)}));
+  // 曲がる角度：交差点で45°以上曲がるならその角度。浅い時は前後40mの経路の向きの方がまっすぐならそちら（地図データの短いくの字対策）
+  const devL=n180(l.out-tL),devF=n180(k.out-k.travel);
+  let dev=Math.abs(devL)>=45?devL:(Math.abs(devF)<Math.abs(devL)?devF:devL);
+  let others=arms.map(a=>({...a,rel:n180(a.b-tL)}));
+  if(N.length>1)others=others.filter(a=>Math.abs(n180(a.rel-180))>25&&Math.abs(n180(a.rel-devL))>25);
+  // 出口の向きが他の道と重なる時は交差点の角度に戻す
+  if(others.some(a=>Math.abs(n180(a.rel-dev))<20))dev=devL;
+  k.dev=dev;
+  // 図で見分けられるよう、出口から30°未満・入口から25°未満の道は離して描く（向きの左右は保つ）
+  others.forEach(a=>{const df=n180(a.rel-dev);if(Math.abs(df)<30)a.rel=n180(dev+(df>=0?30:-30));const di=n180(a.rel-180);if(Math.abs(di)<25)a.rel=n180(180+(di>=0?25:-25))});
+  const all=[...others,{b:(tL+180)%360,rel:180,role:'in'},{b:(tL+dev+360)%360,rel:dev,role:'out'}];
+  all.forEach(a=>{if(beta!=null&&(Math.abs(n180(a.b-beta))<22||Math.abs(n180(a.b-beta-180))<22))a.wide=true;if(!a.wide)a.wide=wideAt(p,a.b,wide)});
+  return all;
 }
 function hasDivided(n1,n2){
   if(hav(n1.p,n2.p)>25)return null;
@@ -498,6 +502,7 @@ function hasDivided(n1,n2){
 
 /* ---------- 文字の指示 ---------- */
 function shapeName(k){
+  if(k.crank)return k.crank.every(x=>x===k.crank[0])?'連続した交差点':'クランク';
   if(!k.arms)return '複合交差点';
   const n=k.arms.length,o=k.arms.filter(a=>a.role!=='in').map(a=>a.rel);
   if(n<=2)return '';
@@ -508,9 +513,10 @@ function shapeName(k){
     return '三叉路';
   }
   if(n===4)return k.divided?'十字路（分離帯あり）':'十字路';
-  return n+'差路';
+  return k.nodes.length>1?'複雑な交差点':n+'差路';
 }
 function actionName(k){
+  if(k.crank)return k.crank.map(x=>x+'折').join('→すぐ');
   const d=k.dev,a=Math.abs(d),side=d>0?'右':'左';
   const others=k.arms?k.arms.filter(x=>!x.role).map(x=>x.rel):[];
   const fork=others.some(o=>Math.abs(o)<60&&Math.abs(o-d)<75);
@@ -558,7 +564,8 @@ function drawKoma(k){
   const loc=k.nodes.map(n=>rot(n.p));
   let mx=0,my=0;loc.forEach(p=>{mx+=p[0];my+=p[1]});mx/=loc.length;my/=loc.length;
   let ext=0;loc.forEach(p=>ext=Math.max(ext,Math.hypot(p[0]-mx,p[1]-my)));
-  const sc=ext>0?Math.min(1.4,20/ext):1;
+  // 交差点どうしの間隔は実際の距離に関係なく図の約3割に広げる（近すぎると1つに見える）
+  const sc=ext>0?14/ext:1;
   const P=loc.map(p=>[50+(p[0]-mx)*sc,50-(p[1]-my)*sc]);
   const dir=b=>{const rel=(b-th)*D2R;return[Math.sin(rel),-Math.cos(rel)]};
   // 他の道（細線）
@@ -704,7 +711,8 @@ async function generate(newSeed){
     const res={S,G:st.goal?G:null,route:best.r,komas:extract(best.r,null,readOpt()),seed,wps:best.wps,ev:best.ev,bt:best.bt,poi:null,poiOk:false,poiLoading:true,poiErr:''};
     st.res=res;st.hl=-1;st.stale=false;drawMap();renderBook();summary();save();
     $('rerollBtn').disabled=false;busy=false;
-    status(`経路ができました（${km(best.r.distance)} km）。信号・目印を調べています…（終わるとコマが増えることがあります）`);
+    const far=best.r.distance>Lkm*1000*1.4?'目標より長めです（道が少ない地域）。':best.r.distance<Lkm*1000*.7?'目標より短めです。':'';
+    status(`経路ができました（${km(best.r.distance)} km）。${far}信号・目印を調べています…（終わるとコマが増えることがあります）`);
     await loadPOI(res,alive);
   }catch(e){if(e===CANCEL)return;console.error(e);if(alive())status('作れませんでした：'+e.message+'（経路サーバーが混んでいる時は少し待って再実行）',1)}
   finally{if(alive()){busy=false;if(st.res)$('rerollBtn').disabled=false}}
