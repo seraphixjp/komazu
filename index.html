@@ -64,7 +64,10 @@ table.rb tr.hl td{background:#fff3c4}
 table.rb tr.blank td{border-color:#000}
 .pf{font-size:7.5pt;color:#555;display:flex;justify-content:space-between;margin-top:1.5mm}
 @media (max-width:900px){
-  .wrap{grid-template-columns:1fr;padding:10px}
+  .wrap{grid-template-columns:minmax(0,1fr);padding:10px}
+  .wrap>*{min-width:0}
+  .row{flex-wrap:wrap}
+  .row>*{min-width:0}
   #map{height:340px}
   #book{align-items:flex-start;overflow-x:auto}
   .pagewrap{zoom:.45}
@@ -82,7 +85,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.2.1</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.3.0</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -195,7 +198,7 @@ $('gpsBtn').onclick=()=>{if(!navigator.geolocation)return status('この端末�
 /* 住所・座標・GoogleマップURL を読む */
 function parseCoord(t){
   let m=t.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);if(m)return[+m[1],+m[2]];
-  m=t.match(/(-?\d{1,3}\.\d{3,})\s*[,，、\s]\s*(-?\d{1,3}\.\d{3,})/);if(m){let a=+m[1],b=+m[2];if(Math.abs(a)>90)[a,b]=[b,a];return[a,b]}
+  m=t.match(/(-?\d{1,3}\.\d{2,})\s*[,，、\s]\s*(-?\d{1,3}\.\d{2,})/);if(m){let a=+m[1],b=+m[2];if(Math.abs(a)>90)[a,b]=[b,a];return[a,b]}
   return null;
 }
 async function resolve(which){
@@ -232,9 +235,9 @@ function makeWaypoints(S,G,P,k,rng){
     for(let i=0;i<k;i++){tt.push((i+.15+rng()*.7)/k);mm.push((.35+rng()*.65)*sg*(rng()<.8?1:-1));ll.push((rng()-.5)*.15);sg=-sg}
     build=s=>{const pts=[[0,0]];for(let i=0;i<k;i++){const a=(tt[i]+ll[i]*Math.min(s,1))*D,b=mm[i]*s*D;pts.push([ux*a+nx*b,uy*a+ny*b])}pts.push(g);return pts};
   }
-  let lo=0,hi=50;for(let i=0;i<50;i++){const m=(lo+hi)/2;if(plen(build(m))<P)lo=m;else hi=m}
-  const s=D<600?lo:lo;
-  return build(s).slice(1,-1).map(pj.b);
+  // 周回は s＝半径(m)、片道は s＝直線距離に対する横ずれの倍率
+  let lo=0,hi=D<600?P:50;for(let i=0;i<60;i++){const m=(lo+hi)/2;if(plen(build(m))<P)lo=m;else hi=m}
+  return build(lo).slice(1,-1).map(pj.b);
 }
 function evalRoute(r){
   let uturn=0,mw=0;
@@ -263,7 +266,23 @@ function backtrackSpans(r){
   for(const lg of r.legs)for(const st_ of lg.steps){const key=st_.maneuver.location.map(v=>v.toFixed(5)).join(',');if(st_.maneuver.type!=='depart'&&st_.maneuver.type!=='arrive'){if(seenJ.has(key))sp.push([seenJ.get(key),d]);else seenJ.set(key,d)}d+=st_.distance}
   return sp;
 }
-function scoreRoute(r,Lm){const ev=evalRoute(r),dErr=Math.abs(r.distance-Lm)/Lm,bt=backtrackSpans(r).length;return{ev,dErr,bt,score:dErr+ev.overlap*6+ev.uturn*.8+ev.mw*5+bt*.5}}
+// 避けたい所（往復・Uターン）の範囲。周回コースでスタート/ゴール付近を同じ道で出入りするのは除く
+function badSpans(r){
+  const T=r.distance,loop=hav([r.legs[0].steps[0].maneuver.location[1],r.legs[0].steps[0].maneuver.location[0]],(()=>{const l=r.legs[r.legs.length-1].steps;const m=l[l.length-1].maneuver.location;return[m[1],m[0]]})())<300;
+  // 周回：スタートから出ていく道を最後に戻ってくる「柄」の部分（行きの位置 a と帰りの残り T-b が同じくらい）は仕方ないので除く
+  const sp=backtrackSpans(r).filter(([a,b])=>!(loop&&Math.abs(a-(T-b))<400));
+  // 分離帯の切れ目などでのUターン（上下線が別の道なので往復の判定では見つからない）。スタート・ゴール直後は除く
+  let d=0;for(const lg of r.legs)for(const s_ of lg.steps){if(s_.maneuver.modifier==='uturn'&&s_.maneuver.type!=='depart'&&s_.maneuver.type!=='arrive'&&d>150&&d<T-150)sp.push([d-40,d+40]);d+=s_.distance}
+  return sp;
+}
+function scoreRoute(r,Lm){const ev=evalRoute(r),dErr=Math.abs(r.distance-Lm)/Lm,bt=badSpans(r).length;return{ev,dErr,bt,score:dErr+ev.overlap*6+ev.mw*5+bt*.6+(r.distance<Lm*.3?2:0)}}
+// 経由点 i の前後の区間（leg i と leg i+1）が避けたい範囲にかかっているか
+function culprits(r,nw){
+  const sp=badSpans(r),out=new Set();let d=0;const bound=[0];
+  r.legs.forEach(lg=>{d+=lg.distance;bound.push(d)});
+  for(const [a,b] of sp)for(let i=0;i<nw;i++){const w=bound[i+1];if((w>a-80&&w<b+80)||(bound[i]<b&&bound[i+2]>a&&b-a<200))out.add(i)}
+  return [...out];
+}
 async function findRoute(S,G,Lm,k,seed){
   let factor=1.3,best=null;const tries=8;
   for(let i=0;i<tries;i++){
@@ -274,22 +293,25 @@ async function findRoute(S,G,Lm,k,seed){
     const sc=scoreRoute(r,Lm);
     if(!best||sc.score<best.score)best={r,wps,...sc};
     // 道の曲がり具合を学習して次の候補の大きさを合わせる
-    const pl=plen([S,...wps,G].map(proj(S).f));if(pl>0)factor=Math.min(2.2,Math.max(1.05,(factor+r.distance/pl)/2));
-    if(sc.dErr<.2&&!sc.bt&&sc.ev.overlap<.005&&!sc.ev.uturn&&!sc.ev.mw)break;
+    const pl=plen([S,...wps,G].map(proj(S).f));if(pl>0)factor=Math.min(2.4,Math.max(1.05,(factor+r.distance/pl)/2));
+    if(sc.dErr<.2&&!sc.bt&&sc.ev.overlap<.005&&!sc.ev.mw)break;
     await sleep(1100);
   }
-  // 往復の原因になっている経由点を外して引き直す
-  for(let n=0;n<4&&best&&(best.bt||best.ev.overlap>=.005||best.ev.uturn);n++){
-    const sp=backtrackSpans(best.r);let d=0;const drop=new Set();
-    best.r.legs.forEach((lg,i)=>{d+=lg.distance;if(i<best.wps.length&&sp.some(([a,b])=>d>a-80&&d<b+80))drop.add(i)});
-    if(!drop.size){ // 範囲で見つからない時はUターンのある区間の終わりの経由点
-      best.r.legs.forEach((lg,i)=>{if(i<best.wps.length&&lg.steps.some(s=>s.maneuver.modifier==='uturn'))drop.add(i)})}
-    if(!drop.size)break;
-    const wps=best.wps.filter((w,i)=>!drop.has(i));
-    status('同じ道を往復する所を直しています…');await sleep(1100);
-    let r;try{r=await routeOnce([S,...wps,G])}catch(e){break}
-    const sc=scoreRoute(r,Lm);best={r,wps,...sc};
+  // 往復・Uターンの原因の経由点を、近くへずらす（だめなら外す）。良くなった時だけ採用
+  const rng=mulberry(seed*31+7),pj=proj(S);
+  for(let n=0;n<5&&best&&best.bt;n++){
+    const bad=culprits(best.r,best.wps.length);if(!bad.length)break;
+    const tryWps=[best.wps.map((w,i)=>{if(!bad.includes(i))return w;const x=pj.f(w),a=rng()*Math.PI*2,m=250+rng()*600;return pj.b([x[0]+Math.cos(a)*m,x[1]+Math.sin(a)*m])})];
+    if(best.wps.length-bad.length>=(hav(S,G)<600?2:0))tryWps.push(best.wps.filter((w,i)=>!bad.includes(i)));
+    let improved=false;
+    for(const wps of tryWps){
+      status('同じ道を往復・Uターンする所を直しています…');await sleep(1100);
+      let r;try{r=await routeOnce([S,...wps,G])}catch(e){continue}
+      const sc=scoreRoute(r,Lm);if(sc.score<best.score){best={r,wps,...sc};improved=true;break}
+    }
+    if(!improved&&n>=2)break;
   }
+  if(best&&best.r.distance<50)throw new Error('経路が短すぎます。スタートとゴールの位置を見直してください');
   return best;
 }
 
@@ -300,7 +322,7 @@ async function fetchPOI(coords){
   const last=coords[coords.length-1];pts.push([last[1],last[0]]);
   const step=Math.ceil(pts.length/400),use=pts.filter((p,i)=>i%step===0||i===pts.length-1);
   const line=use.map(p=>p[0].toFixed(5)+','+p[1].toFixed(5)).join(',');
-  const q=`[out:json][timeout:40];(node[highway=traffic_signals](around:35,${line});node[highway=stop](around:35,${line});nwr[shop=convenience](around:50,${line});nwr[amenity=fuel](around:50,${line});nwr[shop=supermarket](around:50,${line});nwr[amenity~"^(post_office|police|school|fast_food|bank)$"](around:50,${line});node[highway=traffic_signals][name](around:60,${line}););out center tags;way[highway][lanes](around:30,${line});out geom tags;`;
+  const q=`[out:json][timeout:50];(node[highway~"^(traffic_signals|stop)$"](around:40,${line});nwr[shop~"^(convenience|supermarket)$"](around:50,${line});nwr[amenity~"^(fuel|post_office|police|school|fast_food|bank)$"](around:50,${line}););out center tags;way[highway][lanes~"^([4-9]|1[0-9])$"](around:30,${line});out geom tags;`;
   const errs=[];
   for(const [u,wait] of OVERPASS){
     if(wait){status(`信号・目印のサーバーが混んでいます。${wait/1000}秒待って再試行…`);await sleep(wait)}
@@ -468,7 +490,8 @@ function actionName(k){
   if(a<15&&!fork)return '直進';
   if(a<15&&fork){const other=others.find(o=>Math.abs(o)<60);return other>0?'左寄り直進':'右寄り直進'}
   if(a<55)return side+'方向';
-  if(a<150)return side+'折';
+  if(a<130)return side+'折';
+  if(a<172||(k.nodes&&k.nodes.length>1))return '鋭角'+side+'折';
   return 'Uターン';
 }
 const quad=rel=>rel>=0?(rel<90?'右奥':'右手前'):(rel>-90?'左奥':'左手前');
@@ -611,6 +634,7 @@ function focusKoma(i){
 }
 function drawMap(){
   komaLayer.clearLayers();if(routeLine){map.removeLayer(routeLine);routeLine=null}
+  if(!map.hasLayer(komaLayer))komaLayer.addTo(map);$('hideMapBtn').textContent='地図の経路を隠す';
   const res=st.res;if(!res)return;
   routeLine=L.polyline(res.route.geometry.coordinates.map(c=>[c[1],c[0]]),{color:'#c8102e',weight:5,opacity:.8}).addTo(map);
   res.komas.forEach((k,i)=>{const m=L.marker(k.p,{ki:i,icon:L.divIcon({className:'',html:`<div class="kmark">${i+1}</div>`,iconSize:[20,18],iconAnchor:[10,9]})});m.on('click',()=>{focusKoma(i);const tr=document.querySelector(`tr[data-i="${i}"]`);if(tr)tr.scrollIntoView({block:'center',behavior:'smooth'})});komaLayer.addLayer(m)});
@@ -619,8 +643,10 @@ function drawMap(){
 function summary(){
   const r=st.res,opt=readOpt(),t=r.route.distance,req=Math.ceil(t/1000/opt.cast*60);
   const sig=r.komas.filter(k=>k.sig).length;
-  $('summary').innerHTML=`<span>全長 <b>${km(t)}</b> km</span><span>コマ <b>${r.komas.length}</b></span><span>所要 <b>${req}</b> 分（${opt.cast}km/h）</span><span>信号 ${sig}</span>${r.poiOk?'':'<span style="color:#c8102e">信号・目印のデータが取れませんでした（'+esc(r.poiErr||'')+'）。少し待って「コマ図を作る」をもう一度</span>'}${r.ev.overlap>.03?'<span style="color:#c8102e">同じ道を2回通る所があります</span>':''}`;
+  $('summary').innerHTML=`<span>全長 <b>${km(t)}</b> km</span><span>コマ <b>${r.komas.length}</b></span><span>所要 <b>${req}</b> 分（${opt.cast}km/h）</span><span>信号 ${sig}</span>${r.poiOk?'':'<span style="color:#c8102e">信号・目印のデータが取れませんでした（'+esc(r.poiErr||'')+'）</span><button id="poiRetry">信号・目印だけ取り直す</button>'}${r.bt?'<span style="color:#c8102e">往復・Uターンする所が残っています（別の経路にしてください）</span>':''}${r.ev.mw?'<span style="color:#c8102e">高速道路・フェリーを通ります（別の経路にしてください）</span>':''}`;
   $('resPanel').style.display='';
+  const pr=$('poiRetry');if(pr)pr.onclick=async()=>{pr.disabled=true;status('信号・一時停止・目印を調べています…');const poi=await fetchPOI(r.route.geometry.coordinates);
+    if(poi){r.poi=poi;r.poiOk=true;r.poiErr='';r.komas=extract(r.route,poi,readOpt());st.hl=-1;drawMap();renderBook();status('信号・目印を取り直しました')}else{r.poiErr=poiErr;status('まだ取れません（'+poiErr+'）。1分ほど待ってからもう一度',1)}summary()};
 }
 
 /* ---------- 実行 ---------- */
@@ -646,7 +672,7 @@ async function generate(newSeed){
     status('信号・一時停止・目印を調べています…');
     const poi=await fetchPOI(best.r.geometry.coordinates);
     const komas=extract(best.r,poi,readOpt());
-    st.res={route:best.r,komas,seed,wps:best.wps,ev:best.ev,poi,poiOk:!!poi,poiErr};st.hl=-1;
+    st.res={S,G:st.goal?G:null,route:best.r,komas,seed,wps:best.wps,ev:best.ev,bt:best.bt,poi,poiOk:!!poi,poiErr};st.hl=-1;
     drawMap();renderBook();summary();save();
     status(`できました：${km(best.r.distance)} km・コマ ${komas.length}。下のロードブックを確認して印刷してください。`);
     $('rerollBtn').disabled=false;
@@ -675,7 +701,9 @@ $('gpxBtn').onclick=()=>{
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([x],{type:'application/gpx+xml'}));a.download=`komazu-${r.seed}.gpx`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000);
 };
 function shareURL(){
-  const p=new URLSearchParams();if(st.start)p.set('s',st.start.lat+','+st.start.lon);if(st.goal)p.set('g',st.goal.lat+','+st.goal.lon);
+  // 作った経路の地点を使う（作った後で地点を動かしてもリンクの経路とずれないように）
+  const p=new URLSearchParams(),r=st.res,S=r?r.S:st.start&&[st.start.lat,st.start.lon],G=r?r.G:st.goal&&[st.goal.lat,st.goal.lon];
+  if(S)p.set('s',S[0]+','+S[1]);if(G)p.set('g',G[0]+','+G[1]);
   p.set('seed',$('seedIn').value);if(st.res&&st.res.wps)p.set('w',st.res.wps.map(w=>w[0].toFixed(5)+','+w[1].toFixed(5)).join(';'));if($('distIn').value)p.set('d',$('distIn').value);p.set('t',$('turnsIn').value);p.set('c',$('straightIn').value);p.set('v',$('castIn').value);p.set('n',$('perIn').value);p.set('name',$('nameIn').value);p.set('sec',$('secIn').value);
   return location.origin+location.pathname+'?'+p.toString();
 }
