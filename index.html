@@ -82,7 +82,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.2.0</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.2.1</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -118,7 +118,7 @@ table.rb tr.blank td{border-color:#000}
     </div>
 
     <div style="margin-top:14px"><button class="main" id="genBtn">コマ図を作る</button></div>
-    <div class="row" style="margin-top:6px"><button id="rerollBtn" disabled>別の経路にする</button></div>
+    <div class="row" style="margin-top:6px"><button id="rerollBtn" disabled>別の経路にする</button><button id="resetBtn" class="shrink">リセット</button></div>
     <div id="status"></div>
   </div>
 
@@ -655,6 +655,13 @@ async function generate(newSeed){
 }
 $('genBtn').onclick=()=>generate(false);
 $('rerollBtn').onclick=()=>generate(true);
+// 入力・経路・保存内容をすべて初期状態に戻す
+$('resetBtn').onclick=()=>{
+  if(busy)return;
+  if(!confirm('スタート・ゴール・設定・作ったコマ図をすべて消して最初の状態に戻します。よろしいですか？'))return;
+  try{localStorage.removeItem('komazu')}catch(e){}
+  location.href=location.pathname;
+};
 ['perIn','castIn','etaIn','nameIn','secIn'].forEach(id=>$(id).addEventListener('change',()=>{save();if(st.res){renderBook();summary()}}));
 ['distIn','turnsIn','straightIn','seedIn'].forEach(id=>$(id).addEventListener('change',()=>{if(id!=='straightIn')st.fixedWps=null;save()}));
 $('straightIn').addEventListener('change',()=>{if(st.res){st.res.komas=extract(st.res.route,st.res.poi,readOpt());st.hl=-1;drawMap();renderBook();summary()}});
