@@ -85,7 +85,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.3.1</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.3.2</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -405,15 +405,22 @@ function extract(route,poi,opt){
   }
   // 近い交差点（30m以内）はひとつのコマにまとめる
   const C=[];
-  for(const j of J){const last=C[C.length-1];if(last&&j.d-last.nodes[last.nodes.length-1].d<30)last.nodes.push(j);else C.push({nodes:[j]})}
+  for(const j of J){const last=C[C.length-1];if(last&&j.d-last.nodes[0].d<25)last.nodes.push(j);else C.push({nodes:[j]})}
+  const gc=route.geometry.coordinates.map(c=>[c[1],c[0]]),gcum=[0];
+  for(let i=1;i<gc.length;i++)gcum.push(gcum[i-1]+hav(gc[i-1],gc[i]));
+  const gs=gcum[gcum.length-1]>0?total/gcum[gcum.length-1]:1;
+  const pointAt=d=>{d=Math.max(0,Math.min(total,d))/gs;let i=1;while(i<gcum.length-1&&gcum[i]<d)i++;const a=gc[i-1],b=gc[i],L=gcum[i]-gcum[i-1],t=L>0?(d-gcum[i-1])/L:0;return[a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t]};
+  const farBrg=(p,q,fb)=>hav(p,q)>5?brg(p,q):fb;
   const komas=[];
   komas.push({type:'start',d:0,p:[route.legs[0].steps[0].maneuver.location[1],route.legs[0].steps[0].maneuver.location[0]],road:roadOf(route.legs[0].steps[0])});
-  for(const c of C){
+  for(let ci=0;ci<C.length;ci++){const c=C[ci];
     const f=c.nodes[0],l=c.nodes[c.nodes.length-1];
+    // 向きを測る距離：40m。ただし前後の交差点を越えない
+    const backD=Math.max(10,Math.min(40,ci>0?f.d-C[ci-1].nodes[C[ci-1].nodes.length-1].d:40)),fwdD=Math.max(10,Math.min(40,ci<C.length-1?C[ci+1].nodes[0].d-l.d:40));
     const dec=c.nodes.some(n=>n.decision),sig=c.nodes.some(n=>n.sig);
     if(!(dec||(opt.straight>=1&&sig)||opt.straight>=2))continue;
     if(total-f.d<15)continue;
-    const k={type:'jct',d:f.d,p:f.p,nodes:c.nodes,travel:f.travel,out:l.out,sig,inRoad:f.inRoad,outRoad:l.outRoad};
+    const k={type:'jct',d:f.d,p:f.p,nodes:c.nodes,travel:farBrg(pointAt(f.d-backD),f.p,f.travel),out:farBrg(l.p,pointAt(l.d+fwdD),l.out),sig,inRoad:f.inRoad,outRoad:l.outRoad};
     k.dev=n180(k.out-k.travel);
     // 一時停止：進入側の手前にある止まれ
     k.stop=near(f.p,'stop',30).some(e=>{const b=brg(f.p,e.p);return Math.abs(n180(b-f.bearings[f.inI]))<40||hav(f.p,e.p)<6});
@@ -463,7 +470,17 @@ function buildArms(k,wide){
     n2.bearings.forEach((b,i)=>{if(i!==n2.inI)add(b,i===n2.outI?'out':'')});
     arms.forEach(a=>{if(Math.abs(n180(a.b-beta))<22||Math.abs(n180(a.b-beta-180))<22)a.wide=true});
     k.divided=true;
+  }else if(k.nodes.length===2){
+    // 食い違い・くの字の交差点：つなぎの道を除いて腕を合わせる
+    const [n1,n2]=k.nodes;p=n1.p;arms=[];
+    const add=(b,role)=>{const o=arms.find(a=>Math.abs(n180(a.b-b))<25);if(o){if(role)o.role=role}else arms.push({b,role})};
+    n1.bearings.forEach((b,i)=>{if(i!==n1.outI&&i!==n1.inI)add(b,'')});
+    n2.bearings.forEach((b,i)=>{if(i!==n2.inI&&i!==n2.outI)add(b,'')});
+    arms=arms.filter(a=>Math.abs(n180(a.b-k.travel-180))>25&&Math.abs(n180(a.b-k.out))>25);
+    arms.push({b:(k.travel+180)%360,role:'in'},{b:k.out,role:'out'});
+    k.offset=true;
   }else return null;
+  arms.forEach(a=>{if(a.role==='in')a.b=(k.travel+180)%360;if(a.role==='out')a.b=k.out});
   arms.forEach(a=>{a.rel=n180(a.b-k.travel);if(!a.wide)a.wide=wideAt(p,a.b,wide)});
   if(!arms.some(a=>a.role==='in'))arms.push({b:(k.travel+180)%360,rel:180,role:'in'});
   if(!arms.some(a=>a.role==='out'))arms.push({b:k.out,rel:n180(k.out-k.travel),role:'out'});
@@ -481,8 +498,9 @@ function hasDivided(n1,n2){
 
 /* ---------- 文字の指示 ---------- */
 function shapeName(k){
-  if(!k.arms)return k.nodes.length>=3?'複合交差点':'変形交差点';
+  if(!k.arms)return '複合交差点';
   const n=k.arms.length,o=k.arms.filter(a=>a.role!=='in').map(a=>a.rel);
+  if(n<=2)return '';
   if(n===3){
     const a=o.map(Math.abs);
     if(a.every(x=>x>=55&&x<=125))return 'T字路';
@@ -605,7 +623,7 @@ function svg(inner){return `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/
 function remarks(k,opt,total){
   if(k.type==='start'){const rl=roadLabel(k.road);return `<div class="act">START</div><div>${esc(opt.sec.split(/→|->/)[0].trim()||'TC0')} 出発</div>${rl?`<div class="sm">${esc(rl)}</div>`:''}`}
   if(k.type==='goal'){const req=Math.ceil(total/1000/opt.cast*60);return `<div class="act">GOAL</div><div>${esc((opt.sec.split(/→|->/)[1]||'TC1').trim())} 到着</div><div class="sm">所要時間 ${req}分（${opt.cast}km/h）</div>`}
-  const parts=[];if(k.sig)parts.push('信号');parts.push(shapeName(k));
+  const parts=[];if(k.sig)parts.push('信号');const sh=shapeName(k);if(sh)parts.push(sh);
   let s=`<div class="act">${actionName(k)}</div><div>${esc(parts.join(' '))}${k.stop?'　一時停止':''}</div>`;
   if(k.jname)s+=`<div class="sm">交差点名「${esc(k.jname)}」</div>`;
   if(k.lm)s+=`<div class="sm">${quad(k.lm.rel)}に ${esc(k.lm.name)}</div>`;
