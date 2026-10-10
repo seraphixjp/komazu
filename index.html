@@ -82,7 +82,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.1.1</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.2.0</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -167,6 +167,7 @@ L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',{maxZoom:
 const pinIcon=c=>L.divIcon({className:'',html:`<div class="pin ${c}">${c==='s'?'S':'G'}</div>`,iconSize:[26,26],iconAnchor:[13,13]});
 let mS=null,mG=null,routeLine=null,komaLayer=L.layerGroup().addTo(map);
 function setLoc(which,ll,label){
+  st.fixedWps=null;
   st[which]=ll?{lat:+ll[0].toFixed(6),lon:+ll[1].toFixed(6),label:label||''}:null;
   const info=$(which==='start'?'startInfo':'goalInfo');
   let m=which==='start'?mS:mG;
@@ -248,20 +249,46 @@ async function routeOnce(pts){
   if(j.code!=='Ok'||!j.routes||!j.routes.length)throw new Error(j.message||j.code||'経路なし');
   return j.routes[0];
 }
+// 同じ道を往復している区間（行き止まりへの寄り道・ブロック一周など）の範囲 [始まり,終わり] m
+function backtrackSpans(r){
+  const c=r.geometry.coordinates,first=new Map(),sp=[];let cum=0;
+  for(let i=1;i<c.length;i++){
+    const a=c[i-1].map(v=>v.toFixed(5)).join(','),b=c[i].map(v=>v.toFixed(5)).join(',');
+    const L=hav([c[i-1][1],c[i-1][0]],[c[i][1],c[i][0]]);
+    if(a!==b){const key=a<b?a+'|'+b:b+'|'+a;if(first.has(key))sp.push([first.get(key),cum+L]);else first.set(key,cum)}
+    cum+=L;
+  }
+  // ひとつの交差点を2回通る（小さく一周して戻る）のも寄り道として扱う
+  const seenJ=new Map();let d=0;
+  for(const lg of r.legs)for(const st_ of lg.steps){const key=st_.maneuver.location.map(v=>v.toFixed(5)).join(',');if(st_.maneuver.type!=='depart'&&st_.maneuver.type!=='arrive'){if(seenJ.has(key))sp.push([seenJ.get(key),d]);else seenJ.set(key,d)}d+=st_.distance}
+  return sp;
+}
+function scoreRoute(r,Lm){const ev=evalRoute(r),dErr=Math.abs(r.distance-Lm)/Lm,bt=backtrackSpans(r).length;return{ev,dErr,bt,score:dErr+ev.overlap*6+ev.uturn*.8+ev.mw*5+bt*.5}}
 async function findRoute(S,G,Lm,k,seed){
-  let factor=1.3,best=null;const tries=5;
+  let factor=1.3,best=null;const tries=8;
   for(let i=0;i<tries;i++){
     const rng=mulberry(seed*7919+i*104729);
     status(`経路を探しています… (${i+1}/${tries})`);
     const wps=makeWaypoints(S,G,Lm/factor,k,rng);
     let r;try{r=await routeOnce([S,...wps,G])}catch(e){if(i===tries-1&&!best)throw e;await sleep(1200);continue}
-    const ev=evalRoute(r),dErr=Math.abs(r.distance-Lm)/Lm;
-    const score=dErr+ev.overlap*4+ev.uturn*.6+ev.mw*5;
-    if(!best||score<best.score)best={r,score,ev,wps};
+    const sc=scoreRoute(r,Lm);
+    if(!best||sc.score<best.score)best={r,wps,...sc};
     // 道の曲がり具合を学習して次の候補の大きさを合わせる
     const pl=plen([S,...wps,G].map(proj(S).f));if(pl>0)factor=Math.min(2.2,Math.max(1.05,(factor+r.distance/pl)/2));
-    if(dErr<.15&&ev.overlap<.02&&!ev.uturn&&!ev.mw)break;
+    if(sc.dErr<.2&&!sc.bt&&sc.ev.overlap<.005&&!sc.ev.uturn&&!sc.ev.mw)break;
     await sleep(1100);
+  }
+  // 往復の原因になっている経由点を外して引き直す
+  for(let n=0;n<4&&best&&(best.bt||best.ev.overlap>=.005||best.ev.uturn);n++){
+    const sp=backtrackSpans(best.r);let d=0;const drop=new Set();
+    best.r.legs.forEach((lg,i)=>{d+=lg.distance;if(i<best.wps.length&&sp.some(([a,b])=>d>a-80&&d<b+80))drop.add(i)});
+    if(!drop.size){ // 範囲で見つからない時はUターンのある区間の終わりの経由点
+      best.r.legs.forEach((lg,i)=>{if(i<best.wps.length&&lg.steps.some(s=>s.maneuver.modifier==='uturn'))drop.add(i)})}
+    if(!drop.size)break;
+    const wps=best.wps.filter((w,i)=>!drop.has(i));
+    status('同じ道を往復する所を直しています…');await sleep(1100);
+    let r;try{r=await routeOnce([S,...wps,G])}catch(e){break}
+    const sc=scoreRoute(r,Lm);best={r,wps,...sc};
   }
   return best;
 }
@@ -273,7 +300,7 @@ async function fetchPOI(coords){
   const last=coords[coords.length-1];pts.push([last[1],last[0]]);
   const step=Math.ceil(pts.length/400),use=pts.filter((p,i)=>i%step===0||i===pts.length-1);
   const line=use.map(p=>p[0].toFixed(5)+','+p[1].toFixed(5)).join(',');
-  const q=`[out:json][timeout:40];(node[highway=traffic_signals](around:35,${line});node[highway=stop](around:35,${line});nwr[shop=convenience](around:50,${line});nwr[amenity=fuel](around:50,${line});nwr[shop=supermarket](around:50,${line});nwr[amenity~"^(post_office|police|school|fast_food|bank)$"](around:50,${line});node[highway=traffic_signals][name](around:60,${line}););out center tags;`;
+  const q=`[out:json][timeout:40];(node[highway=traffic_signals](around:35,${line});node[highway=stop](around:35,${line});nwr[shop=convenience](around:50,${line});nwr[amenity=fuel](around:50,${line});nwr[shop=supermarket](around:50,${line});nwr[amenity~"^(post_office|police|school|fast_food|bank)$"](around:50,${line});node[highway=traffic_signals][name](around:60,${line}););out center tags;way[highway][lanes](around:30,${line});out geom tags;`;
   const errs=[];
   for(const [u,wait] of OVERPASS){
     if(wait){status(`信号・目印のサーバーが混んでいます。${wait/1000}秒待って再試行…`);await sleep(wait)}
@@ -281,10 +308,13 @@ async function fetchPOI(coords){
       // 時間切れでも200で返り、remark に理由が入って要素が空になる
       if(j.remark&&/error|timed out|runtime/i.test(j.remark))throw new Error(j.remark.slice(0,80));
       poiErr='';
-      return j.elements.map(e=>{const lat=e.lat??e.center?.lat,lon=e.lon??e.center?.lon,t=e.tags||{};
+      // 片側2車線以上（中央分離帯なしで lanes>=4）の道
+      const wide=j.elements.filter(e=>e.type==='way'&&e.geometry&&parseInt(e.tags&&e.tags.lanes)>=4&&(e.tags.oneway||'no')==='no').map(e=>e.geometry.map(g=>[g.lat,g.lon]));
+      const arr=j.elements.filter(e=>!(e.type==='way'&&e.geometry)).map(e=>{const lat=e.lat??e.center?.lat,lon=e.lon??e.center?.lon,t=e.tags||{};
         const kind=t.highway==='traffic_signals'?'sig':t.highway==='stop'?'stop':t.shop==='convenience'?'cvs':t.amenity==='fuel'?'gs':'etc';
         const nm=kind==='sig'?(t.name||''):shortName(kind,t);
         return{kind,p:[lat,lon],name:nm}}).filter(e=>e.p[0]!=null&&(e.kind!=='etc'||e.name));
+      arr.wide=wide;return arr;
     }catch(e){console.warn('overpass',u,e);errs.push(new URL(u).host+': '+(e.name==='AbortError'?'時間切れ':e.message))}
   }
   poiErr=errs.join(' / ');
@@ -362,6 +392,7 @@ function extract(route,poi,opt){
     // 交差点名（信号の name）
     const sn=poi?poi.filter(e=>e.kind==='sig'&&e.name&&hav(e.p,f.p)<40)[0]:null;if(sn)k.jname=sn.name;
     if(lm){const rel=n180(brg(f.p,lm.p)-f.travel);k.lm={name:lm.name,rel}}
+    k.arms=buildArms(k,poi&&poi.wide);
     komas.push(k);
   }
   const lastStep=steps[steps.length-1];
@@ -372,25 +403,70 @@ function extract(route,poi,opt){
   return komas;
 }
 
+// 交差点を1点として描くための腕 [{b:方位, rel:進行方向からの角度, role:'in'|'out'|'', wide}]
+function wideAt(p,b,wide){
+  if(!wide||!wide.length)return false;
+  const pj=proj(p),q=[Math.sin(b*D2R)*14,Math.cos(b*D2R)*14];
+  for(const w of wide){
+    const xs=w.map(pj.f);
+    for(let i=1;i<xs.length;i++){
+      const a=xs[i-1],c=xs[i],dx=c[0]-a[0],dy=c[1]-a[1],L2=dx*dx+dy*dy;if(!L2)continue;
+      const t=Math.max(0,Math.min(1,((q[0]-a[0])*dx+(q[1]-a[1])*dy)/L2)),d=Math.hypot(a[0]+dx*t-q[0],a[1]+dy*t-q[1]);
+      if(d<7){const sb=(Math.atan2(dx,dy)*R2D+360)%360;const df=Math.abs(n180(sb-b));if(df<35||df>145)return true}
+    }
+  }
+  return false;
+}
+function hasArm(n,b,skip){return n.bearings.some((x,i)=>i!==skip&&Math.abs(n180(x-b))<22)}
+function buildArms(k,wide){
+  let arms,p;
+  if(k.nodes.length===1){
+    const n=k.nodes[0];p=n.p;
+    arms=n.bearings.map((b,i)=>({b,role:i===n.inI?'in':i===n.outI?'out':''}));
+  }else if(k.nodes.length===2&&hasDivided(k.nodes[0],k.nodes[1])!=null){
+    // 中央分離帯のある道（上下線が別々の道）を横切る・曲がる → 1つの交差点にまとめて二重線で描く
+    const [n1,n2]=k.nodes,beta=hasDivided(n1,n2);p=[(n1.p[0]+n2.p[0])/2,(n1.p[1]+n2.p[1])/2];
+    arms=[];
+    const add=(b,role)=>{const o=arms.find(a=>Math.abs(n180(a.b-b))<25);if(o){if(role)o.role=role}else arms.push({b,role})};
+    n1.bearings.forEach((b,i)=>{if(i!==n1.outI)add(b,i===n1.inI?'in':'')});
+    n2.bearings.forEach((b,i)=>{if(i!==n2.inI)add(b,i===n2.outI?'out':'')});
+    arms.forEach(a=>{if(Math.abs(n180(a.b-beta))<22||Math.abs(n180(a.b-beta-180))<22)a.wide=true});
+    k.divided=true;
+  }else return null;
+  arms.forEach(a=>{a.rel=n180(a.b-k.travel);if(!a.wide)a.wide=wideAt(p,a.b,wide)});
+  if(!arms.some(a=>a.role==='in'))arms.push({b:(k.travel+180)%360,rel:180,role:'in'});
+  if(!arms.some(a=>a.role==='out'))arms.push({b:k.out,rel:n180(k.out-k.travel),role:'out'});
+  return arms;
+}
+function hasDivided(n1,n2){
+  if(hav(n1.p,n2.p)>25)return null;
+  const conn=brg(n1.p,n2.p);
+  for(const b of n1.bearings){
+    const pe=Math.abs(n180(conn-b));if(pe<50||pe>130)continue;
+    if(hasArm(n1,b+180,n1.outI)&&hasArm(n2,b,n2.inI)&&hasArm(n2,b+180,n2.inI))return b;
+  }
+  return null;
+}
+
 /* ---------- 文字の指示 ---------- */
 function shapeName(k){
-  if(k.nodes.length>1)return k.nodes.length>=3?'複合交差点':'変形交差点';
-  const j=k.nodes[0],n=j.bearings.length,o=j.others.concat([j.od]);
+  if(!k.arms)return k.nodes.length>=3?'複合交差点':'変形交差点';
+  const n=k.arms.length,o=k.arms.filter(a=>a.role!=='in').map(a=>a.rel);
   if(n===3){
     const a=o.map(Math.abs);
     if(a.every(x=>x>=55&&x<=125))return 'T字路';
     if(o.every(x=>Math.abs(x)<75)&&o[0]*o[1]<0)return 'Y字路';
     return '三叉路';
   }
-  if(n===4)return '十字路';
+  if(n===4)return k.divided?'十字路（分離帯あり）':'十字路';
   return n+'差路';
 }
 function actionName(k){
   const d=k.dev,a=Math.abs(d),side=d>0?'右':'左';
-  const j=k.nodes[k.nodes.length-1];
-  const fork=k.nodes.length===1&&j.others.some(o=>Math.abs(o)<60&&Math.abs(o-j.od)<75);
+  const others=k.arms?k.arms.filter(x=>!x.role).map(x=>x.rel):[];
+  const fork=others.some(o=>Math.abs(o)<60&&Math.abs(o-d)<75);
   if(a<15&&!fork)return '直進';
-  if(a<15&&fork){const other=j.others.find(o=>Math.abs(o)<60);return other>0?'左寄り直進':'右寄り直進'}
+  if(a<15&&fork){const other=others.find(o=>Math.abs(o)<60);return other>0?'左寄り直進':'右寄り直進'}
   if(a<55)return side+'方向';
   if(a<150)return side+'折';
   return 'Uターン';
@@ -426,6 +502,7 @@ function drawKoma(k){
     o+=`<text x="66" y="66" font-size="8" font-weight="700">GOAL</text>`;
     return svg(o);
   }
+  if(k.arms)return drawSingle(k,lim);
   const th=k.travel,f0=k.nodes[0].p,pj=proj(f0);
   const rot=p=>{const e=pj.f(p),r=e[0]*Math.cos(th*D2R)-e[1]*Math.sin(th*D2R),fw=e[0]*Math.sin(th*D2R)+e[1]*Math.cos(th*D2R);return[r,fw]};
   const loc=k.nodes.map(n=>rot(n.p));
@@ -465,6 +542,29 @@ function drawKoma(k){
   // 出た先の道の番号
   const rk=roadKind(k.outRoad);
   if(rk&&!sameRoad(k.inRoad,k.outRoad)){const t=.62,sx=pl[0]+dOut[0]*lenO*t,sy=pl[1]+dOut[1]*lenO*t,nx=-dOut[1],ny=dOut[0];o+=shield(rk,rk.n,Math.max(10,Math.min(90,sx+nx*13)),Math.max(10,Math.min(90,sy+ny*13)))}
+  return svg(o);
+}
+function drawSingle(k,lim){
+  let o='';const C=[50,50];
+  const dir=rel=>[Math.sin(rel*D2R),-Math.cos(rel*D2R)];
+  const end=a=>{if(a.role==='in')return[50,88];const d=dir(a.rel),e=toEdge(C[0],C[1],d[0],d[1],lim),L=Math.min(Math.hypot(e[0]-C[0],e[1]-C[1]),a.role==='out'?40:38);return[C[0]+d[0]*L,C[1]+d[1]*L]};
+  const ln=(e,w,c)=>`<line x1="50" y1="50" x2="${e[0].toFixed(1)}" y2="${e[1].toFixed(1)}" stroke="${c}" stroke-width="${w}" stroke-linecap="butt"/>`;
+  const W=k.arms.filter(a=>a.wide);
+  // 4車線・分離帯のある道は二重線
+  if(W.length){W.forEach(a=>o+=ln(end(a),12,'#000'));o+=`<circle cx="50" cy="50" r="6" fill="#000"/>`;W.forEach(a=>o+=ln(end(a),8,'#fff'));o+=`<circle cx="50" cy="50" r="4" fill="#fff"/>`}
+  k.arms.filter(a=>!a.role&&!a.wide).forEach(a=>o+=ln(end(a),2,'#000').replace('butt','round'));
+  const out=k.arms.find(a=>a.role==='out'),eo=end(out),d=dir(out.rel),ang=Math.atan2(d[0],-d[1]);
+  o+=`<path d="M50,88 L50,50 L${(eo[0]-d[0]*5).toFixed(1)},${(eo[1]-d[1]*5).toFixed(1)}" fill="none" stroke="#000" stroke-width="4.5" stroke-linejoin="round"/>`+arrowHead(eo[0],eo[1],ang)+`<circle cx="50" cy="88" r="4.2" fill="#000"/>`;
+  // 空いている方向に記号を置く
+  const occA=k.arms.map(a=>(a.rel+360)%360).sort((a,b)=>a-b);
+  const gaps=[];for(let i=0;i<occA.length;i++){const a=occA[i],b=i+1<occA.length?occA[i+1]:occA[0]+360;gaps.push({mid:(a+b)/2,w:b-a})}
+  gaps.sort((a,b)=>b.w-a.w);
+  const used=[];
+  if(k.lm){const qa=k.lm.rel>=0?(k.lm.rel<90?45:135):(k.lm.rel>-90?-45:-135);const r=26,x=50+Math.sin(qa*D2R)*r,y=50-Math.cos(qa*D2R)*r;o+=lmLabel(k.lm.name,Math.max(16,Math.min(84,x)),Math.max(8,Math.min(92,y)));used.push(qa)}
+  if(k.sig){const g=gaps.find(g=>!used.some(u=>Math.abs(n180(g.mid-u))<40))||gaps[0];const a=g?g.mid:45,r=W.length?25:17;o+=sigIcon(50+Math.sin(a*D2R)*r,50-Math.cos(a*D2R)*r)}
+  if(k.stop)o+=stopIcon(40,68);
+  const rk=roadKind(k.outRoad);
+  if(rk&&!sameRoad(k.inRoad,k.outRoad)){const L=Math.hypot(eo[0]-50,eo[1]-50)*.62,sx=50+d[0]*L,sy=50+d[1]*L,nx=-d[1],ny=d[0],off=out.wide?16:13;o+=shield(rk,rk.n,Math.max(10,Math.min(90,sx+nx*off)),Math.max(10,Math.min(90,sy+ny*off)))}
   return svg(o);
 }
 function svg(inner){return `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" font-family="BIZ UDPGothic,Yu Gothic,sans-serif">${inner}</svg>`}
@@ -538,12 +638,15 @@ async function generate(newSeed){
     let Lkm=+$('distIn').value;if(!Lkm)Lkm=Math.max(D/1000*1.6,8);
     if(Lkm*1000<D*1.1){Lkm=Math.ceil(D/1000*1.3);status('直線距離より短いので '+Lkm+' km にしました')}
     const k=+$('turnsIn').value+Math.floor(Lkm/25);
-    const best=await findRoute(S,G,Lkm*1000,k,seed);
+    let best;
+    // 共有リンクの経由点があればそのまま使う（シードだけだと経路サーバーの都合で変わることがある）
+    if(st.fixedWps&&!newSeed){status('リンクの経路を読み込み中…');const r=await routeOnce([S,...st.fixedWps,G]);best={r,wps:st.fixedWps,...scoreRoute(r,Lkm*1000)}}
+    else best=await findRoute(S,G,Lkm*1000,k,seed);
     if(!best)throw new Error('経路が見つかりませんでした');
     status('信号・一時停止・目印を調べています…');
     const poi=await fetchPOI(best.r.geometry.coordinates);
     const komas=extract(best.r,poi,readOpt());
-    st.res={route:best.r,komas,seed,ev:best.ev,poi,poiOk:!!poi,poiErr};st.hl=-1;
+    st.res={route:best.r,komas,seed,wps:best.wps,ev:best.ev,poi,poiOk:!!poi,poiErr};st.hl=-1;
     drawMap();renderBook();summary();save();
     status(`できました：${km(best.r.distance)} km・コマ ${komas.length}。下のロードブックを確認して印刷してください。`);
     $('rerollBtn').disabled=false;
@@ -553,7 +656,7 @@ async function generate(newSeed){
 $('genBtn').onclick=()=>generate(false);
 $('rerollBtn').onclick=()=>generate(true);
 ['perIn','castIn','etaIn','nameIn','secIn'].forEach(id=>$(id).addEventListener('change',()=>{save();if(st.res){renderBook();summary()}}));
-['distIn','turnsIn','straightIn'].forEach(id=>$(id).addEventListener('change',save));
+['distIn','turnsIn','straightIn','seedIn'].forEach(id=>$(id).addEventListener('change',()=>{if(id!=='straightIn')st.fixedWps=null;save()}));
 $('straightIn').addEventListener('change',()=>{if(st.res){st.res.komas=extract(st.res.route,st.res.poi,readOpt());st.hl=-1;drawMap();renderBook();summary()}});
 $('printBtn').onclick=()=>window.print();
 $('hideMapBtn').onclick=()=>{const on=routeLine&&map.hasLayer(routeLine);if(!routeLine)return;if(on){map.removeLayer(routeLine);map.removeLayer(komaLayer);$('hideMapBtn').textContent='地図の経路を表示'}else{routeLine.addTo(map);komaLayer.addTo(map);$('hideMapBtn').textContent='地図の経路を隠す'}};
@@ -566,7 +669,7 @@ $('gpxBtn').onclick=()=>{
 };
 function shareURL(){
   const p=new URLSearchParams();if(st.start)p.set('s',st.start.lat+','+st.start.lon);if(st.goal)p.set('g',st.goal.lat+','+st.goal.lon);
-  p.set('seed',$('seedIn').value);if($('distIn').value)p.set('d',$('distIn').value);p.set('t',$('turnsIn').value);p.set('c',$('straightIn').value);p.set('v',$('castIn').value);p.set('n',$('perIn').value);p.set('name',$('nameIn').value);p.set('sec',$('secIn').value);
+  p.set('seed',$('seedIn').value);if(st.res&&st.res.wps)p.set('w',st.res.wps.map(w=>w[0].toFixed(5)+','+w[1].toFixed(5)).join(';'));if($('distIn').value)p.set('d',$('distIn').value);p.set('t',$('turnsIn').value);p.set('c',$('straightIn').value);p.set('v',$('castIn').value);p.set('n',$('perIn').value);p.set('name',$('nameIn').value);p.set('sec',$('secIn').value);
   return location.origin+location.pathname+'?'+p.toString();
 }
 $('linkBtn').onclick=async()=>{const u=shareURL();try{await navigator.clipboard.writeText(u);status('リンクをコピーしました。同じシードなので同じ経路になります（地図データが更新されると変わることがあります）')}catch(e){prompt('このリンクをコピーしてください',u)}};
@@ -582,6 +685,7 @@ $('linkBtn').onclick=async()=>{const u=shareURL();try{await navigator.clipboard.
   if(q.get('s')){
     const s=parseCoord(q.get('s'));if(s){setLoc('start',s,'リンク');$('startIn').value=''}
     const g=q.get('g')&&parseCoord(q.get('g'));setLoc('goal',g||null,g?'リンク':'');$('goalIn').value='';
+    if(q.get('w'))st.fixedWps=q.get('w').split(';').map(parseCoord).filter(Boolean);
     if(q.get('seed'))$('seedIn').value=q.get('seed');$('distIn').value=q.get('d')||'';
     if(q.get('t'))$('turnsIn').value=q.get('t');if(q.get('c'))$('straightIn').value=q.get('c');if(q.get('v'))$('castIn').value=q.get('v');if(q.get('n'))$('perIn').value=q.get('n');
     if(q.get('name'))$('nameIn').value=q.get('name');if(q.get('sec'))$('secIn').value=q.get('sec');
