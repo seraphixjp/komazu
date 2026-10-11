@@ -62,7 +62,10 @@ table.rb td.rm .sm{font-size:8.5pt;color:#333}
 table.rb td.rm .tcbox{display:inline-block;border:.6mm solid #000;padding:.3mm 3mm;font-size:15pt;font-weight:700;margin-bottom:1mm}
 table.rb td.rm .tcl{font-size:10.5pt}
 table.rb td.rm .tcl b{font-size:13pt}
-.ph .tt{font-weight:700;border:.3mm solid #000;padding:0 1.5mm}
+.sumbox{width:100%;border-collapse:collapse;margin:0 0 2.5mm;table-layout:fixed}
+.sumbox th,.sumbox td{border:.6mm solid #000;text-align:center;padding:.6mm 2mm}
+.sumbox th{font-size:8.5pt;font-weight:400;height:4.5mm;border-bottom-width:.3mm}
+.sumbox td{font-size:16pt;font-weight:700;height:9mm;border-top-width:.3mm}
 table.rb tr.hl td{background:#fff3c4}
 table.rb tr.blank td{border-color:#000}
 .pf{font-size:7.5pt;color:#555;display:flex;justify-content:space-between;margin-top:1.5mm}
@@ -88,7 +91,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.4.2</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.4.3</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -650,7 +653,9 @@ function renderBook(){
   const opt=readOpt(),per=+opt.per,K=res.komas,total=res.route.distance,req=reqMin(total,opt);
     const pages=Math.ceil(K.length/per);let h='';
   for(let pg=0;pg<pages;pg++){
-    h+=`<div class="pagewrap"><div class="page"><div class="ph"><div><div class="t1">${esc(opt.name)}</div><div class="t2">${esc(tcNames(opt).join(' → '))}　区間距離 ${km(total)} km　<span class="tt">ターゲットタイム ${fmtTT(req)}</span></div></div><div class="pg">${pg+1} / ${pages}</div></div>`;
+    h+=`<div class="pagewrap"><div class="page"><div class="ph"><div><div class="t1">${esc(opt.name)}</div><div class="t2">${esc(tcNames(opt).join(' → '))}</div></div><div class="pg">${pg+1} / ${pages}</div></div>`;
+    // 1ページ目の上に、区間・総走行距離・ターゲットタイムの枠
+    if(pg===0)h+=`<table class="sumbox"><tr><th>区間</th><th>総走行距離</th><th>ターゲットタイム</th></tr><tr><td>${esc(tcNames(opt).join(' → '))}</td><td>${km(total)} km</td><td>${fmtTT(req)}</td></tr></table>`;
     h+=`<table class="rb"><colgroup><col style="width:11mm"><col style="width:22mm"><col style="width:27mm"><col style="width:var(--dg)"><col></colgroup><thead><tr><th>No.</th><th>区間<br>km</th><th>積算<br>km</th><th>コマ図</th><th>指示・備考</th></tr></thead><tbody>`;
     for(let i=0;i<per;i++){
       const idx=pg*per+i,k=K[idx];
@@ -662,8 +667,8 @@ function renderBook(){
   $('book').innerHTML=h;
   // コマ図の枠を行の高さに合わせて正方形に
   const avail=297-10-8-14-7-4; // mm：用紙−余白−見出し−表の見出し−脚注
-  const rowH=Math.floor(avail/per*10)/10;
-  document.querySelectorAll('.page').forEach(p=>{p.style.setProperty('--dg',Math.min(rowH,70)+'mm');p.querySelectorAll('tbody tr').forEach(tr=>tr.style.height=rowH+'mm');p.querySelectorAll('td.dg svg').forEach(s=>{s.style.width=(Math.min(rowH,70)-2.5)+'mm';s.style.height=(rowH-2.5)+'mm'})});
+  const SUMBOX=19; // mm：1ページ目の枠（区間・総走行距離・ターゲットタイム）
+  document.querySelectorAll('.page').forEach((p,pi)=>{const rowH=Math.floor((avail-(pi===0?SUMBOX:0))/per*10)/10;p.style.setProperty('--dg',Math.min(rowH,70)+'mm');p.querySelectorAll('table.rb tbody tr').forEach(tr=>tr.style.height=rowH+'mm');p.querySelectorAll('td.dg svg').forEach(s=>{s.style.width=(Math.min(rowH,70)-2.5)+'mm';s.style.height=(rowH-2.5)+'mm'})});
   document.querySelectorAll('tr[data-i]').forEach(tr=>tr.onclick=()=>focusKoma(+tr.dataset.i));
 }
 function readOpt(){return{name:$('nameIn').value||'リエゾン練習',sec:$('secIn').value||'TC0 → TC1',per:$('perIn').value,cast:Math.max(5,+$('castIn').value||40),tt:hm($('ttIn').value),straight:+$('straightIn').value}}
