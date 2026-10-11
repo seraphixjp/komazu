@@ -59,7 +59,8 @@ table.rb td.dg svg{display:block;margin:0 auto;height:100%;max-height:100%}
 table.rb td.rm{text-align:left;padding:1.5mm 2.5mm;font-size:10.5pt;line-height:1.45;vertical-align:top}
 table.rb td.rm .act{font-size:13pt;font-weight:700}
 table.rb td.rm .sm{font-size:8.5pt;color:#333}
-table.rb td.rm .eta{font-size:9pt;margin-top:1mm}
+table.rb td.rm .eta{font-size:10pt;margin-top:1mm;font-variant-numeric:tabular-nums}
+table.rb td.rm .eta b{font-size:11.5pt}
 table.rb tr.hl td{background:#fff3c4}
 table.rb tr.blank td{border-color:#000}
 .pf{font-size:7.5pt;color:#555;display:flex;justify-content:space-between;margin-top:1.5mm}
@@ -85,7 +86,7 @@ table.rb tr.blank td{border-color:#000}
 </style>
 </head>
 <body>
-<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.4.0</span></header>
+<header class="app"><h1>コマ図メーカー</h1><span class="ver">リエゾン練習用 v0.4.1</span></header>
 <div class="wrap">
   <div class="panel">
     <h2>スタート・ゴール</h2>
@@ -117,7 +118,11 @@ table.rb tr.blank td{border-color:#000}
     </div>
     <div class="row">
       <div><label class="f">指示速度 km/h（所要時間）</label><input type="number" id="castIn" min="10" max="80" step="1" value="40"></div>
-      <div><label class="f">通過予定の表示</label><select id="etaIn"><option value="0">しない</option><option value="1">する</option></select></div>
+      <div><label class="f">ターゲットタイム</label><select id="ttIn"><option value="1" selected>経過時間（0:00から）</option><option value="2">時刻（出発時刻から）</option><option value="0">表示しない</option></select></div>
+    </div>
+    <div class="row">
+      <div><label class="f">TC出発時刻（時刻表示の時）</label><input type="time" id="t0In" value="10:00"></div>
+      <div></div>
     </div>
 
     <div style="margin-top:14px"><button class="main" id="genBtn">コマ図を作る</button></div>
@@ -160,7 +165,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const km=m=>(m/1000).toFixed(2);
 function status(msg,err){const e=$('status');e.textContent=msg||'';e.className=err?'err':''}
-function save(){try{localStorage.setItem('komazu',JSON.stringify({start:st.start,goal:st.goal,startIn:$('startIn').value,goalIn:$('goalIn').value,dist:$('distIn').value,turns:$('turnsIn').value,straight:$('straightIn').value,name:$('nameIn').value,sec:$('secIn').value,per:$('perIn').value,cast:$('castIn').value,eta:$('etaIn').value}))}catch(e){}}
+function save(){try{localStorage.setItem('komazu',JSON.stringify({start:st.start,goal:st.goal,startIn:$('startIn').value,goalIn:$('goalIn').value,dist:$('distIn').value,turns:$('turnsIn').value,straight:$('straightIn').value,name:$('nameIn').value,sec:$('secIn').value,per:$('perIn').value,cast:$('castIn').value,tt:$('ttIn').value,t0:$('t0In').value}))}catch(e){}}
 function load(){try{return JSON.parse(localStorage.getItem('komazu')||'null')}catch(e){return null}}
 async function fetchJSON(url,opt,ms=25000){const ac=new AbortController();const t=setTimeout(()=>ac.abort(),ms);try{const r=await fetch(url,{...opt,signal:ac.signal});if(!r.ok)throw new Error('HTTP '+r.status);return await r.json()}finally{clearTimeout(t)}}
 
@@ -637,18 +642,29 @@ function remarks(k,opt,total){
   if(!sameRoad(k.inRoad,k.outRoad)){const rl=roadLabel(k.outRoad);if(rl)s+=`<div class="sm">→ ${esc(rl)}</div>`}
   return s;
 }
-function fmtETA(sec){sec=Math.round(sec);const m=Math.floor(sec/60),s=sec%60;return m+':'+String(s).padStart(2,'0')}
+function fmtETA(sec){sec=Math.round(sec);const h=Math.floor(sec/3600),m=Math.floor(sec/60)%60,s=sec%60,p=n=>String(n).padStart(2,'0');return h?h+':'+p(m)+':'+p(s):m+':'+p(s)}
+function hm(v){const m=/^(\d{1,2}):(\d{2})/.exec(v||'');return m?(+m[1])*60+(+m[2]):null}
+function clock(sec){sec=Math.round(sec)%86400;const p=n=>String(n).padStart(2,'0');return p(Math.floor(sec/3600))+':'+p(Math.floor(sec/60)%60)+':'+p(sec%60)}
+// 練習用のターゲットタイム：指示速度で走った時にそのコマを通る時間（経過時間か、出発時刻からの時刻）
+function reqMin(total,opt){return Math.ceil(total/1000/opt.cast*60)}
+function target(sec,opt){return opt.tt===2&&opt.t0!=null?clock(opt.t0*60+sec):fmtETA(sec)}
+function ttCell(k,opt,total){
+  if(!opt.tt)return '';
+  const sec=k.type==='start'?0:k.type==='goal'?reqMin(total,opt)*60:k.d/1000/opt.cast*3600;
+  return `<div class="eta">目標 <b>${target(sec,opt)}</b></div>`;
+}
 function renderBook(){
   const res=st.res;if(!res){$('book').innerHTML='';return}
-  const opt=readOpt(),per=+opt.per,K=res.komas,total=res.route.distance;
+  const opt=readOpt(),per=+opt.per,K=res.komas,total=res.route.distance,req=reqMin(total,opt);
+  const tc=opt.tt===2&&opt.t0!=null?`　出発 ${clock(opt.t0*60).slice(0,5)} → 到着 ${clock((opt.t0+req)*60).slice(0,5)}`:'';
   const pages=Math.ceil(K.length/per);let h='';
   for(let pg=0;pg<pages;pg++){
-    h+=`<div class="pagewrap"><div class="page"><div class="ph"><div><div class="t1">${esc(opt.name)}</div><div class="t2">${esc(opt.sec)}　全長 ${km(total)} km　コマ ${K.length}</div></div><div class="pg">${pg+1} / ${pages}</div></div>`;
+    h+=`<div class="pagewrap"><div class="page"><div class="ph"><div><div class="t1">${esc(opt.name)}</div><div class="t2">${esc(opt.sec)}　全長 ${km(total)} km　コマ ${K.length}　所要 ${req}分（${opt.cast}km/h）${tc}</div></div><div class="pg">${pg+1} / ${pages}</div></div>`;
     h+=`<table class="rb"><colgroup><col style="width:11mm"><col style="width:22mm"><col style="width:27mm"><col style="width:var(--dg)"><col></colgroup><thead><tr><th>No.</th><th>区間<br>km</th><th>積算<br>km</th><th>コマ図</th><th>指示・備考</th></tr></thead><tbody>`;
     for(let i=0;i<per;i++){
       const idx=pg*per+i,k=K[idx];
       if(!k){h+=`<tr class="blank"><td></td><td></td><td></td><td></td><td></td></tr>`;continue}
-      const eta=opt.eta?`<div class="eta">通過予定 ${fmtETA(k.d/1000/opt.cast*3600)}</div>`:'';
+      const eta=ttCell(k,opt,total);
       h+=`<tr data-i="${idx}"${idx===st.hl?' class="hl"':''}><td class="no">${idx+1}</td><td class="dp">${k.type==='start'?'':km(k.part)}</td><td class="dt">${km(k.d)}</td><td class="dg">${drawKoma(k)}</td><td class="rm">${remarks(k,opt,total)}${eta}</td></tr>`;
     }
     h+=`</tbody></table><div class="pf"><span>シード ${res.seed}　距離はOSMの道路データから計算（実測とずれます）</span><span>コマ図メーカー</span></div></div></div>`;
@@ -660,7 +676,7 @@ function renderBook(){
   document.querySelectorAll('.page').forEach(p=>{p.style.setProperty('--dg',Math.min(rowH,70)+'mm');p.querySelectorAll('tbody tr').forEach(tr=>tr.style.height=rowH+'mm');p.querySelectorAll('td.dg svg').forEach(s=>{s.style.width=(Math.min(rowH,70)-2.5)+'mm';s.style.height=(rowH-2.5)+'mm'})});
   document.querySelectorAll('tr[data-i]').forEach(tr=>tr.onclick=()=>focusKoma(+tr.dataset.i));
 }
-function readOpt(){return{name:$('nameIn').value||'リエゾン練習',sec:$('secIn').value||'TC0 → TC1',per:$('perIn').value,cast:Math.max(5,+$('castIn').value||40),eta:$('etaIn').value==='1',straight:+$('straightIn').value}}
+function readOpt(){return{name:$('nameIn').value||'リエゾン練習',sec:$('secIn').value||'TC0 → TC1',per:$('perIn').value,cast:Math.max(5,+$('castIn').value||40),tt:+$('ttIn').value,t0:hm($('t0In').value),straight:+$('straightIn').value}}
 function focusKoma(i){
   st.hl=i;const k=st.res.komas[i];map.setView(k.p,Math.max(map.getZoom(),16));
   document.querySelectorAll('tr[data-i]').forEach(tr=>tr.classList.toggle('hl',+tr.dataset.i===i));
@@ -737,7 +753,7 @@ $('resetBtn').onclick=()=>{
   try{localStorage.removeItem('komazu')}catch(e){}
   location.href=location.pathname;
 };
-['perIn','castIn','etaIn','nameIn','secIn'].forEach(id=>$(id).addEventListener('change',()=>{save();if(st.res){renderBook();summary()}}));
+['perIn','castIn','ttIn','t0In','nameIn','secIn'].forEach(id=>$(id).addEventListener('change',()=>{save();if(st.res){renderBook();summary()}}));
 ['distIn','turnsIn','straightIn','seedIn'].forEach(id=>$(id).addEventListener('change',()=>{if(id!=='straightIn')st.fixedWps=null;save()}));
 $('straightIn').addEventListener('change',()=>{if(st.res){st.res.komas=extract(st.res.route,st.res.poi,readOpt());st.hl=-1;drawMap();renderBook();summary()}});
 $('printBtn').onclick=()=>window.print();
@@ -753,7 +769,7 @@ function shareURL(){
   // 作った経路の地点を使う（作った後で地点を動かしてもリンクの経路とずれないように）
   const p=new URLSearchParams(),r=st.res,S=r?r.S:st.start&&[st.start.lat,st.start.lon],G=r?r.G:st.goal&&[st.goal.lat,st.goal.lon];
   if(S)p.set('s',S[0]+','+S[1]);if(G)p.set('g',G[0]+','+G[1]);
-  p.set('seed',$('seedIn').value);if(st.res&&st.res.wps)p.set('w',st.res.wps.map(w=>w[0].toFixed(5)+','+w[1].toFixed(5)).join(';'));if($('distIn').value)p.set('d',$('distIn').value);p.set('t',$('turnsIn').value);p.set('c',$('straightIn').value);p.set('v',$('castIn').value);p.set('n',$('perIn').value);p.set('name',$('nameIn').value);p.set('sec',$('secIn').value);
+  p.set('seed',$('seedIn').value);if(st.res&&st.res.wps)p.set('w',st.res.wps.map(w=>w[0].toFixed(5)+','+w[1].toFixed(5)).join(';'));if($('distIn').value)p.set('d',$('distIn').value);p.set('t',$('turnsIn').value);p.set('c',$('straightIn').value);p.set('v',$('castIn').value);p.set('tt',$('ttIn').value);p.set('t0',$('t0In').value);p.set('n',$('perIn').value);p.set('name',$('nameIn').value);p.set('sec',$('secIn').value);
   return location.origin+location.pathname+'?'+p.toString();
 }
 $('linkBtn').onclick=async()=>{const u=shareURL();try{await navigator.clipboard.writeText(u);status('リンクをコピーしました。同じシードなので同じ経路になります（地図データが更新されると変わることがあります）')}catch(e){prompt('このリンクをコピーしてください',u)}};
@@ -762,7 +778,7 @@ $('linkBtn').onclick=async()=>{const u=shareURL();try{await navigator.clipboard.
 (function init(){
   const q=new URLSearchParams(location.search),sv=load();
   if(sv){['startIn','goalIn'].forEach(id=>$(id).value=sv[id]||'');
-    if(sv.dist)$('distIn').value=sv.dist;if(sv.turns)$('turnsIn').value=sv.turns;if(sv.straight)$('straightIn').value=sv.straight;if(sv.name)$('nameIn').value=sv.name;if(sv.sec)$('secIn').value=sv.sec;if(sv.per)$('perIn').value=sv.per;if(sv.cast)$('castIn').value=sv.cast;if(sv.eta)$('etaIn').value=sv.eta;
+    if(sv.dist)$('distIn').value=sv.dist;if(sv.turns)$('turnsIn').value=sv.turns;if(sv.straight)$('straightIn').value=sv.straight;if(sv.name)$('nameIn').value=sv.name;if(sv.sec)$('secIn').value=sv.sec;if(sv.per)$('perIn').value=sv.per;if(sv.cast)$('castIn').value=sv.cast;if(sv.tt)$('ttIn').value=sv.tt;if(sv.t0)$('t0In').value=sv.t0;
     if(sv.start)setLoc('start',[sv.start.lat,sv.start.lon],sv.start.label);if(sv.goal)setLoc('goal',[sv.goal.lat,sv.goal.lon],sv.goal.label);else setLoc('goal',null);
     if(sv.start)map.setView([sv.start.lat,sv.start.lon],12);}
   else setLoc('goal',null);
@@ -771,7 +787,7 @@ $('linkBtn').onclick=async()=>{const u=shareURL();try{await navigator.clipboard.
     const g=q.get('g')&&parseCoord(q.get('g'));setLoc('goal',g||null,g?'リンク':'');$('goalIn').value='';
     if(q.get('w'))st.fixedWps=q.get('w').split(';').map(parseCoord).filter(Boolean);
     if(q.get('seed'))$('seedIn').value=q.get('seed');$('distIn').value=q.get('d')||'';
-    if(q.get('t'))$('turnsIn').value=q.get('t');if(q.get('c'))$('straightIn').value=q.get('c');if(q.get('v'))$('castIn').value=q.get('v');if(q.get('n'))$('perIn').value=q.get('n');
+    if(q.get('t'))$('turnsIn').value=q.get('t');if(q.get('c'))$('straightIn').value=q.get('c');if(q.get('v'))$('castIn').value=q.get('v');if(q.get('tt'))$('ttIn').value=q.get('tt');if(q.get('t0'))$('t0In').value=q.get('t0');if(q.get('n'))$('perIn').value=q.get('n');
     if(q.get('name'))$('nameIn').value=q.get('name');if(q.get('sec'))$('secIn').value=q.get('sec');
     history.replaceState(null,'',location.pathname);
     generate(false);
