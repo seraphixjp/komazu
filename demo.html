@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b0b0d">
+<title>コマ図メーカー デモ</title>
+<style>
+:root{--bg:#0b0b0d;--card:#16161a;--line:#2a2a30;--fg:#f2f2f2;--dim:#a0a0a8;--amber:#ffb300}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Hiragino Sans","Yu Gothic UI",sans-serif}
+body{min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}
+header{width:100%;max-width:1000px;display:flex;align-items:center;gap:12px;margin-bottom:12px}
+header img{height:26px}
+header h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.04em}
+header span{color:var(--dim);font-size:13px}
+#stageWrap{width:100%;max-width:1000px;position:relative}
+#win{position:absolute;left:0;top:0;width:1284px;transform-origin:0 0;border:2px solid #333;border-radius:12px;overflow:hidden;background:#fff;
+  box-shadow:0 0 0 6px #18181c,0 20px 50px rgba(0,0,0,.6)}
+#bar{height:36px;background:#202024;display:flex;align-items:center;gap:8px;padding:0 14px}
+#bar i{width:12px;height:12px;border-radius:50%;background:#444}
+#bar span{margin-left:14px;background:#2c2c31;color:#aaa;font-size:14px;padding:4px 14px;border-radius:14px;flex:1;max-width:560px}
+#win iframe{width:1280px;height:780px;border:0;display:block;pointer-events:none;background:#fff}
+#win.free iframe{pointer-events:auto}
+#ring{position:absolute;border:4px solid var(--amber);border-radius:10px;box-shadow:0 0 0 5px rgba(255,179,0,.3),0 0 28px rgba(255,179,0,.55);
+  pointer-events:none;opacity:0;transition:opacity .25s;z-index:3}
+#ring.on{opacity:1}
+.tapfx{position:absolute;width:56px;height:56px;margin:-28px 0 0 -28px;border-radius:50%;background:rgba(255,179,0,.55);
+  pointer-events:none;z-index:4;animation:tap .5s ease-out forwards}
+@keyframes tap{from{transform:scale(.3);opacity:1}to{transform:scale(1.4);opacity:0}}
+#cap{width:100%;max-width:1000px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-top:16px;min-height:150px}
+#capHead{display:flex;align-items:baseline;gap:10px}
+#capNo{color:var(--amber);font-weight:800;font-size:14px;white-space:nowrap}
+#capT{font-size:21px;font-weight:800;margin:0}
+#capB{font-size:16px;line-height:1.75;color:#dcdce0;margin:8px 0 0}
+#capB b{color:var(--amber);font-weight:700}
+#prog{height:4px;background:var(--line);border-radius:2px;margin-top:14px;overflow:hidden}
+#progIn{height:100%;width:0;background:var(--amber);transition:width .4s}
+#ctl{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+#ctl button{background:#222228;color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:10px 16px;font-size:15px;cursor:pointer;min-height:44px}
+#ctl button:hover{background:#2c2c33}
+#ctl .grow{flex:1}
+#intro{position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  background:rgba(5,5,7,.9);border-radius:12px;cursor:pointer;text-align:center;padding:16px}
+#intro img{width:min(260px,50%)}
+#intro .t{font-size:26px;font-weight:800}
+#intro .s{color:var(--dim);font-size:14px}
+#intro .play{width:78px;height:78px;border-radius:50%;background:var(--amber);display:flex;align-items:center;justify-content:center}
+#intro .play:after{content:"";border-left:26px solid #000;border-top:16px solid transparent;border-bottom:16px solid transparent;margin-left:7px}
+#intro.off{display:none}
+ul.sum{margin:8px 0 0;padding-left:1.2em;line-height:1.8;font-size:15px;color:#dcdce0}
+ul.sum b{color:var(--amber)}
+@media (max-width:600px){header span{display:none}#capT{font-size:18px}#capB{font-size:14.5px}#cap{padding:12px 14px}#ctl button{padding:8px 12px;font-size:14px}#intro .t{font-size:20px}}
+</style>
+</head>
+<body>
+<header><img src="seraphix-logo.png" alt="SERAPHIX"><h1>コマ図メーカー</h1><span>リエゾン練習用のコマ図を自動で作る　デモ</span></header>
+<div id="stageWrap">
+  <div id="win"><div id="bar"><i></i><i></i><i></i><span>seraphixjp.github.io/komazu</span></div>
+    <iframe id="fw" src="index.html?demo=1"></iframe><div id="ring"></div></div>
+  <div id="intro"><img src="seraphix-logo.png" alt=""><div class="play"></div><div class="t">デモを再生（約2分）</div>
+    <div class="s">住所の入力 → 経路づくり → コマ図の完成 までを自動で操作します。経路はその場でネットから作ります。</div></div>
+</div>
+<section id="cap">
+  <div id="capHead"><span id="capNo"></span><h2 id="capT">コマ図メーカー</h2></div>
+  <div id="capB">スタートとゴールを入れるだけで、国内ラリーのリエゾンと同じ書式のコマ図（ロードブック）を作ります。ラリーの練習や、ラリーコンピューターのテストに。</div>
+  <div id="prog"><div id="progIn"></div></div>
+  <div id="ctl">
+    <button id="bPause">一時停止</button><button id="bSkip">次へ ▶▶</button><button id="bRestart">最初から</button>
+    <span class="grow"></span><button id="bFree">自分で触る</button>
+  </div>
+</section>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const fw = $('fw'), win = $('win');
+let W = null, doc = null;
+
+// ---------- 画面の大きさ ----------
+let scale = 1;
+function fit(){
+  scale = Math.min(1, $('stageWrap').clientWidth / 1288);
+  win.style.transform = `scale(${scale})`;
+  $('stageWrap').style.height = (822 * scale) + 'px';
+}
+addEventListener('resize', fit); fit();
+
+// ---------- 待ち（一時停止で止まる・「次へ」で飛ばす） ----------
+let paused = false, skipping = false, runId = 0;
+class Stop extends Error {}
+const frame = () => new Promise(r => setTimeout(r, 50));
+async function wait(ms){ const id = runId; let left = ms, last = performance.now();
+  while (left > 0) { await frame(); if (id !== runId) throw new Stop(); if (skipping) return;
+    const n = performance.now(); if (!paused) left -= n - last; last = n; } }
+// 条件がそろうまで（ネットの返事待ち）。「次へ」でも飛ばさない
+async function until(cond, ms = 90000){ const id = runId, t0 = performance.now();
+  while (!cond()) { await frame(); if (id !== runId) throw new Stop(); if (performance.now() - t0 > ms) return false; }
+  return true; }
+
+// ---------- 画面の中の操作 ----------
+const q = sel => typeof sel === 'string' ? doc.querySelector(sel) : sel;
+function rectOf(el){ const r = el.getBoundingClientRect(); return { x:2 + r.left, y:38 + r.top, w:r.width, h:r.height }; }
+let ringEl = null;
+function ring(sel){ ringEl = sel ? q(sel) : null; $('ring').classList.toggle('on', !!ringEl); }
+(function loop(){
+  if (ringEl) { const r = rectOf(ringEl), g = $('ring').style;
+    const top = Math.max(38, r.y - 6), bot = Math.min(818, r.y + r.h + 6);
+    g.left = (r.x - 6) + 'px'; g.top = top + 'px'; g.width = (r.w + 12) + 'px'; g.height = Math.max(0, bot - top) + 'px'; }
+  requestAnimationFrame(loop);
+})();
+async function show(sel, block = 'center'){ const el = q(sel); if (el) { el.scrollIntoView({ block, behavior:'smooth' }); await wait(700); } }
+async function tap(sel){
+  const el = q(sel); if (!el) return;
+  const r = rectOf(el), fx = document.createElement('div'); fx.className = 'tapfx';
+  fx.style.left = (r.x + r.w / 2) + 'px'; fx.style.top = (r.y + r.h / 2) + 'px'; win.appendChild(fx); setTimeout(() => fx.remove(), 600);
+  await wait(150); el.click(); await wait(300);
+}
+// 1文字ずつ打つ
+async function type(sel, text){
+  const el = q(sel); el.focus(); el.value = '';
+  for (const ch of text) { el.value += ch; el.dispatchEvent(new W.Event('input', { bubbles:true })); await wait(skipping ? 0 : 70); }
+  el.dispatchEvent(new W.Event('change', { bubbles:true })); el.blur();
+}
+function setVal(sel, v){ const el = q(sel); el.value = v; el.dispatchEvent(new W.Event('change', { bubbles:true })); }
+const bookSig = () => { const f = doc.querySelector('#book .pf span'); return f ? f.textContent : ''; };
+
+// ---------- 字幕 ----------
+const SCENES = 8;
+function cap(no, t, b){ $('capNo').textContent = `${no} / ${SCENES}`; $('capT').textContent = t; $('capB').innerHTML = b; $('progIn').style.width = (no / SCENES * 100) + '%'; skipping = false; }
+
+// ---------- シナリオ ----------
+async function run(){
+  const id = ++runId;
+  try {
+    cap(1, 'スタートとゴールを入れる', '<b>住所・座標・GoogleマップのURL</b>のどれでも入ります。地図をクリックして指定したり、現在地から始めることもできます。ゴールを空にすると、スタートに戻る<b>周回コース</b>になります。');
+    await show('#startIn'); ring('#startIn'); await type('#startIn', '群馬県甘楽郡甘楽町小幡'); await tap('#startGo');
+    await until(() => /小幡|甘楽/.test(q('#startInfo').textContent), 20000);
+    ring('#goalIn'); await type('#goalIn', '群馬県富岡市富岡1460-1'); await tap('#goalGo');
+    await until(() => /富岡/.test(q('#goalInfo').textContent), 20000); ring('#map'); await wait(2500);
+
+    cap(2, '経路の条件', '<b>距離の目安・曲がる回数・直進のコマを入れるか</b>を選びます。経路は毎回ランダムに作り、<b>シード番号</b>が同じなら同じ経路になるので、仲間と同じコマ図で練習できます。');
+    ring(null); await show('#distIn'); ring(q('#distIn').closest('.row'));
+    setVal('#distIn', 12); await wait(800); setVal('#seedIn', 23); await wait(2500);
+
+    cap(3, 'ターゲットタイム', 'TC区間のターゲットタイムは、<b>経路の所要時間＋信号・一時停止の数＋余裕</b>から自動で見積もります。指示速度から計算したり、手で入れることもできます。');
+    await show('#modeIn'); ring(q('#modeIn').closest('.row')); await wait(5000);
+
+    cap(4, 'コマ図を作る', 'ボタンを押すと、実在の道路データから<b>経路を探し</b>、曲がる交差点・信号のある交差点を<b>コマ</b>にします。Uターンや同じ道の往復、高速道路は避けます。');
+    ring(null); const before = bookSig(); await show('#genBtn'); ring('#genBtn'); await tap('#genBtn'); ring('#status');
+    let ok = await until(() => bookSig() && bookSig() !== before, 45000);
+    if (!ok) { $('capB').innerHTML += '<br><span style="color:var(--dim)">（地図のサーバーが混んでいます。もう少し待ちます…）</span>'; ok = await until(() => bookSig() && bookSig() !== before, 60000); }
+    if (!ok) { cap(4, 'コマ図を作る', '地図のサーバーが混んでいて、経路を作れませんでした。少し時間をおいて「最初から」を押してください。'); ring(null); return; }
+
+    cap(5, '地図で経路を確認', '経路とコマの番号を地図に表示します。上に<b>全長・コマの数・ターゲットタイム</b>。信号や目印（コンビニ・ガソリンスタンドなど）は少し遅れて追加されます。');
+    W.scrollTo({ top:0, behavior:'smooth' }); await wait(600); ring('#map'); await wait(4000); ring('#summary'); await wait(3500);
+
+    cap(6, 'ロードブック（コマ図）', '本番と同じ書式の表で、<b>No.・区間距離・積算距離・コマ図・指示/備考</b>。1ページ目の上に区間・総走行距離・ターゲットタイム。4車線道路は二重線、信号・一時停止・国道/県道の番号も描きます。');
+    ring(null); await show('#book .page', 'start'); ring('#book .page table.sumbox'); await wait(3500);
+    ring('#book .page table.rb'); await wait(4500);
+    const rows = [...doc.querySelectorAll('#book tr[data-i]')], row = rows[Math.min(3, rows.length - 1)];
+    if (row) {
+      $('capB').innerHTML = 'コマをクリックすると、<b>地図がその交差点に移動</b>します。実際の場所を見ながらコマ図を確かめられます。';
+      await show(row); ring(row); await wait(1500); await tap(row); await wait(800);
+      W.scrollTo({ top:0, behavior:'smooth' }); await wait(600); ring('#map'); await wait(4000);
+    }
+
+    cap(7, '別の経路にする', '気に入らなければ<b>1クリックで別の経路</b>に。同じスタート・ゴールでも毎回違うコマ図になります。');
+    ring(null); W.scrollTo({ top:0, behavior:'smooth' }); await wait(700);
+    const b2 = bookSig(); ring('#rerollBtn'); await tap('#rerollBtn'); ring('#map');
+    await until(() => bookSig() && bookSig() !== b2, 60000); await wait(4000);
+
+    ring(null);
+    cap(8, 'まとめ', `<ul class="sum">
+      <li><b>A4で印刷</b>：1ページ5〜10コマ。そのまま車に積めます</li>
+      <li><b>GPXで保存</b>：カーナビや地図アプリに経路を読み込めます</li>
+      <li><b>リンクで共有</b>：同じコマ図をチームや仲間に送れます</li>
+      <li><b>無料の地図データ</b>（OpenStreetMap・国土地理院）で動き、アプリのインストールは不要</li></ul>
+      <p style="margin:10px 0 0;color:var(--dim);font-size:14px">「自分で触る」で好きな場所のコマ図を作れます。</p>`);
+    await show('#printBtn'); ring(q('#printBtn').parentElement);
+  } catch (e) { if (!(e instanceof Stop)) console.error(e); }
+}
+
+// ---------- 操作 ----------
+function startDemo(){
+  W = fw.contentWindow; doc = fw.contentDocument; if (!doc || !doc.getElementById('genBtn')) return;
+  $('intro').classList.add('off'); win.classList.remove('free'); $('bFree').textContent = '自分で触る';
+  run();
+}
+$('intro').addEventListener('click', startDemo);
+$('bPause').addEventListener('click', () => { paused = !paused; $('bPause').textContent = paused ? '再生' : '一時停止'; });
+$('bSkip').addEventListener('click', () => { skipping = true; if (paused) $('bPause').click(); });
+$('bRestart').addEventListener('click', () => {
+  runId++; ring(null); paused = false; $('bPause').textContent = '一時停止';
+  $('intro').classList.remove('off'); $('intro').querySelector('.t').textContent = 'もう一度再生';
+  fw.src = 'index.html?demo=1&r=' + Date.now();
+});
+$('bFree').addEventListener('click', () => {
+  const free = !win.classList.contains('free');
+  win.classList.toggle('free', free); $('bFree').textContent = free ? '触るのをやめる' : '自分で触る';
+  if (free) { runId++; ring(null); }
+});
+</script>
+</body>
+</html>
